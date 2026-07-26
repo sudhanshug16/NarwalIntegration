@@ -75,6 +75,7 @@ TOPIC_CMD_SHUTDOWN = "common/shutdown"
 TOPIC_CMD_GET_DEVICE_INFO = "common/get_device_info"
 TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
+TOPIC_CMD_GET_CONFIG = "config/get"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"

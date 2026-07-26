@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-
 from typing import Any
 
 from homeassistant.components.vacuum import (
@@ -19,22 +18,20 @@ except ImportError:
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
+from . import NarwalConfigEntry
+from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
+from .coordinator import NarwalCoordinator
+from .entity import NarwalEntity
 from .narwal_client import (
     CleaningRoute,
     CommandResult,
     FanLevel,
     MopHumidity,
     MopStrengthLevel,
-    NarwalCommandError,
-    WorkMode,
     WorkingStatus,
+    WorkMode,
 )
 from .narwal_client.const import ACTIVE_CLEANING_STATUSES
-
-from . import NarwalConfigEntry
-from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
-from .coordinator import NarwalCoordinator
-from .entity import NarwalEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -130,11 +127,6 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         activity = WORKING_STATUS_TO_ACTIVITY.get(state.working_status)
         if activity is not None:
             return activity
-        if state.working_status == WorkingStatus.UNKNOWN and not state.is_docked:
-            _LOGGER.warning(
-                "Unknown working status while off-dock; reporting cleaning"
-            )
-            return VacuumActivity.CLEANING
         return VacuumActivity.IDLE
 
     @property
@@ -164,7 +156,7 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             await client.wake(timeout=10.0)
 
     async def async_start(self) -> None:
-        """Start or resume cleaning."""
+        """Start or resume cleaning using the selected clean parameters."""
         await self._ensure_awake()
         state = self.coordinator.data
         # is_paused stays stale after docking — only trust it during cleaning
@@ -179,6 +171,9 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         if is_cleaning and state.is_paused:
             await self.coordinator.client.resume(timeout=self._ACTION_TIMEOUT)
         else:
+            # Whole-house start intentionally stays on the established
+            # compatibility command. Parameterized payloads are only used for
+            # explicit room-clean requests on an eligible device profile.
             resp = await self.coordinator.client.start()
             _LOGGER.info(
                 "Start command response: code=%s, success=%s",
@@ -274,16 +269,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         await self._ensure_awake()
         room_ids = [int(sid) for sid in segment_ids]
         _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
-        settings = self.coordinator.select_options
-        resp = await self.coordinator.client.start_rooms(
-            room_ids,
-            work_mode=ROOM_CLEAN_MODES[settings.get("mode", "Vacuum and mop")],
-            fan=ROOM_CLEAN_SUCTION[settings.get("suction", "AI")],
-            water=ROOM_CLEAN_WATER[settings.get("water", "Wet")],
-            mop_strength=ROOM_CLEAN_SCRUB[settings.get("scrub", "High")],
-            passes=int(settings.get("passes", "2")),
-            route=ROOM_CLEAN_ROUTES[settings.get("route", "Meticulous")],
-        )
+        if self.coordinator.parameterized_clean_enabled:
+            resp = await self.coordinator.client.start_rooms(
+                room_ids,
+                **self._selected_clean_parameters(),
+            )
+        else:
+            resp = await self.coordinator.client.start_rooms_compat(room_ids)
         try:
             result_name = CommandResult(resp.result_code).name
         except ValueError:
@@ -300,6 +292,25 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
                 "Try again after the robot is idle on the dock.",
                 result_name, resp.result_code, room_ids,
             )
+
+    def _selected_clean_parameters(self) -> dict[str, object]:
+        """Translate restored HA selectors into one coherent CleanParam."""
+        settings = self.coordinator.select_options
+        route_name = settings.get("route")
+        return {
+            "work_mode": ROOM_CLEAN_MODES[
+                settings.get("mode", "Vacuum and mop")
+            ],
+            "fan": ROOM_CLEAN_SUCTION[settings.get("suction", "Normal")],
+            "water": ROOM_CLEAN_WATER[settings.get("water", "Normal")],
+            "mop_strength": ROOM_CLEAN_SCRUB[
+                settings.get("scrub", "Normal")
+            ],
+            "passes": int(settings.get("passes", "1")),
+            "route": ROOM_CLEAN_ROUTES.get(route_name)
+            if route_name is not None
+            else None,
+        }
 
     @callback
     def _handle_coordinator_update(self) -> None:

@@ -18,6 +18,17 @@
       "already_configured": "This vacuum is already configured."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Advanced Narwal controls",
+        "description": "This exposes only the supervised AX15 parameterized-clean validation service on the exact probed firmware. Every service call also requires a confirmation flag. It does not enable station, configuration, map, camera, pump, firmware, or normal automation writes.",
+        "data": {
+          "enable_experimental_cleaning": "Enable experimental parameterized cleaning for this exact model and firmware"
+        }
+      }
+    }
+  },
   "entity": {
     "vacuum": {
       "vacuum": {
@@ -52,6 +63,18 @@
       },
       "firmware_version": {
         "name": "Firmware version"
+      },
+      "capabilities": {
+        "name": "Advertised capabilities"
+      },
+      "config_snapshot": {
+        "name": "Configuration snapshot"
+      },
+      "current_clean_task": {
+        "name": "Current clean task"
+      },
+      "protocol_profile": {
+        "name": "Protocol profile"
       },
       "charging_state": {
         "name": "Charging",

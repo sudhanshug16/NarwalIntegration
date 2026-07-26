@@ -1,4 +1,4 @@
-"""Narwal Flow Robot Vacuum integration for Home Assistant."""
+"""Narwal Robot Vacuum integration for Home Assistant."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import logging
 from typing import TypeAlias
 
 import voluptuous as vol
-
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.vacuum import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry
@@ -18,20 +17,21 @@ from homeassistant.exceptions import (
     Unauthorized,
     UnknownUser,
 )
-from homeassistant.helpers import config_validation as cv, service
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import service
 
 from .const import (
     CONF_MODEL,
     CONF_PRODUCT_KEY,
     DOMAIN,
     PLATFORMS,
-    SERVICE_CLEAN_ROOMS,
+    SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
 )
 from .coordinator import NarwalCoordinator
 from .narwal_client import (
-    CommandResult,
     CleaningRoute,
+    CommandResult,
     FanLevel,
     MopHumidity,
     MopStrengthLevel,
@@ -43,6 +43,14 @@ _LOGGER = logging.getLogger(__name__)
 
 NarwalConfigEntry: TypeAlias = ConfigEntry[NarwalCoordinator]
 
+
+async def _async_options_updated(
+    hass: HomeAssistant,
+    entry: NarwalConfigEntry,
+) -> None:
+    """Reload entities after guarded-write options change."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
 FIELD_ROOMS = "rooms"
 FIELD_MODE = "mode"
 FIELD_SUCTION = "suction"
@@ -50,6 +58,7 @@ FIELD_WATER = "water"
 FIELD_MOP_STRENGTH = "mop_strength"
 FIELD_PASSES = "passes"
 FIELD_ROUTE = "route"
+FIELD_CONFIRM_UNVERIFIED = "confirm_unverified"
 
 WORK_MODE_OPTIONS: dict[str, WorkMode] = {
     "vacuum": WorkMode.VACUUM,
@@ -91,6 +100,7 @@ CLEAN_ROOMS_SCHEMA = vol.Schema(
         vol.Optional(FIELD_MOP_STRENGTH, default="normal"): vol.In(MOP_STRENGTH_OPTIONS),
         vol.Optional(FIELD_PASSES, default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
         vol.Optional(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
+        vol.Required(FIELD_CONFIRM_UNVERIFIED): bool,
     }
 )
 
@@ -210,6 +220,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
     """Register Narwal domain services."""
 
     async def async_clean_rooms(call) -> None:
+        if call.data.get(FIELD_CONFIRM_UNVERIFIED) is not True:
+            raise HomeAssistantError(
+                "Set confirm_unverified to true for each supervised validation run"
+            )
         entity_ids = list(await service.async_extract_entity_ids(call))
         if not entity_ids and any(
             key in call.data for key in (ATTR_ENTITY_ID, ATTR_DEVICE_ID, ATTR_AREA_ID)
@@ -221,6 +235,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
             entity_ids,
         )
         for coordinator in coordinators:
+            if not coordinator.parameterized_clean_validation_enabled:
+                raise HomeAssistantError(
+                    "Unverified parameterized cleaning is not available for this "
+                    "exact model, firmware, and advertised capability set."
+                )
             client = coordinator.client
             if not client.robot_awake:
                 await client.wake(timeout=10.0)
@@ -241,8 +260,8 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 if FIELD_ROUTE in call.data
                 else None,
             )
-            if resp.result_code == 0:
-                result_name = "ACCEPTED"
+            if not resp.result_known:
+                result_name = "UNCONFIRMED_RESPONSE"
             else:
                 try:
                     result_name = CommandResult(resp.result_code).name
@@ -254,7 +273,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 resp.result_code,
                 room_ids,
             )
-            if resp.result_code not in (0, CommandResult.SUCCESS):
+            if not resp.result_known:
+                _LOGGER.warning(
+                    "The parameterized clean response did not include an action "
+                    "result code; physical behavior must be verified directly"
+                )
+            elif resp.result_code != CommandResult.SUCCESS:
                 raise HomeAssistantError(
                     f"Narwal room clean failed: {result_name} ({resp.result_code})"
                 )
@@ -262,7 +286,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(
         DOMAIN,
-        SERVICE_CLEAN_ROOMS,
+        SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
         async_clean_rooms,
         schema=CLEAN_ROOMS_SCHEMA,
     )
@@ -304,6 +328,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NarwalConfigEntry) -> bo
         ) from err
 
     entry.runtime_data = coordinator
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     data = _domain_data(hass)
     data[entry.entry_id] = coordinator
 

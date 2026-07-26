@@ -6,29 +6,24 @@ on the NarwalVacuum entity using HA stubs.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+import sys
+from unittest.mock import AsyncMock, MagicMock
 
 # Install HA stubs before any custom_components import
 import tests.ha_stubs  # noqa: E402
 
 tests.ha_stubs.install()
 
-from narwal_client.models import MapData, NarwalState, RoomInfo  # noqa: E402
+from custom_components.narwal.vacuum import NarwalVacuum  # noqa: E402
 from narwal_client.const import (  # noqa: E402
     CleaningRoute,
     FanLevel,
     MopHumidity,
     MopStrengthLevel,
-    WorkMode,
     WorkingStatus,
+    WorkMode,
 )
-from custom_components.narwal.vacuum import NarwalVacuum  # noqa: E402
-
-# Grab Segment class from stubs for assertions
-import sys
+from narwal_client.models import MapData, NarwalState, RoomInfo  # noqa: E402
 
 Segment = sys.modules["homeassistant.components.vacuum"].Segment
 
@@ -44,6 +39,7 @@ def _make_vacuum(state: NarwalState | None = None) -> NarwalVacuum:
     coordinator.client.state = MagicMock()
     coordinator.client.state.firmware_version = "1.0.0"
     coordinator.last_update_success = True
+    coordinator.parameterized_clean_enabled = False
 
     vac = NarwalVacuum.__new__(NarwalVacuum)
     vac.coordinator = coordinator
@@ -191,6 +187,7 @@ class TestAsyncCleanSegments:
         """Converts string segment IDs to int and calls client.start_rooms."""
         state = NarwalState()
         vac = _make_vacuum(state=state)
+        vac.coordinator.parameterized_clean_enabled = True
         vac.coordinator.client.start_rooms = AsyncMock(
             return_value=MagicMock(result_code=0, success=True)
         )
@@ -218,6 +215,18 @@ class TestAsyncCleanSegments:
             passes=3,
             route=CleaningRoute.STANDARD,
         )
+
+    async def test_unvalidated_profile_uses_compatibility_room_clean(self) -> None:
+        state = NarwalState()
+        vac = _make_vacuum(state=state)
+        vac.coordinator.client.robot_awake = True
+        vac.coordinator.client.start_rooms_compat = AsyncMock(
+            return_value=MagicMock(result_code=1, success=True)
+        )
+
+        await vac.async_clean_segments(["11", "9"])
+
+        vac.coordinator.client.start_rooms_compat.assert_awaited_once_with([11, 9])
 
 
 class TestAsyncStart:
@@ -254,14 +263,14 @@ class TestVacuumActivity:
 
         assert _make_vacuum(state=state).activity == "docked"
 
-    def test_unknown_off_dock_status_reports_cleaning(self) -> None:
-        """New firmware states stay active until their enum is mapped."""
+    def test_unknown_off_dock_status_does_not_invent_cleaning(self) -> None:
+        """New firmware states remain conservative until their enum is mapped."""
         state = NarwalState()
         state.working_status = WorkingStatus.UNKNOWN
         state.dock_field11 = 1
         state.dock_field47 = 2
 
-        assert _make_vacuum(state=state).activity == "cleaning"
+        assert _make_vacuum(state=state).activity == "idle"
 
 
 class TestCheckSegmentChanges:

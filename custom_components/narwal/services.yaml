@@ -1,6 +1,6 @@
-clean_rooms:
-  name: Clean rooms
-  description: Start a room clean using Narwal's local clean/start_clean command.
+validate_parameterized_clean:
+  name: Validate parameterized room cleaning
+  description: Send an unverified app-derived clean/start_clean payload to an explicitly opted-in AX15. Supervise the robot and use Stop if its physical behavior is unexpected.
   target:
     entity:
       integration: narwal
@@ -66,3 +66,9 @@ clean_rooms:
           options:
             - standard
             - meticulous
+    confirm_unverified:
+      name: Confirm supervised test
+      description: Required on every call. Confirms that this is a supervised validation run, not a supported automation.
+      required: true
+      selector:
+        boolean:

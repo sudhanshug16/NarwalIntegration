@@ -279,6 +279,7 @@ class TestNarwalState:
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 99}})
         assert state.working_status == WorkingStatus.UNKNOWN
+        assert state.raw_working_status_value is not None
 
     def test_update_from_base_status(self) -> None:
         state = NarwalState()

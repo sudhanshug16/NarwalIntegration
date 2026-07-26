@@ -8,9 +8,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-_LOGGER = logging.getLogger(__name__)
-_ACTIVE_WORKING_STATUS_TTL = 15.0
-
+from .capabilities import CapabilityMap
+from .config import ConfigSnapshot
 from .const import (
     ACTIVE_CLEANING_STATUSES,
     TOPIC_CMD_GET_ROBOT_TASK_STATUS,
@@ -18,6 +17,10 @@ from .const import (
     CommandResult,
     WorkingStatus,
 )
+from .task import CurrentCleanTask
+
+_LOGGER = logging.getLogger(__name__)
+_ACTIVE_WORKING_STATUS_TTL = 15.0
 
 
 @dataclass
@@ -628,14 +631,20 @@ class CommandResponse:
     result_code: int = 0
     data: dict[str, Any] = field(default_factory=dict)
     raw_payload: bytes = b""
+    # False when payload field 1 is absent or structured query data. Callers
+    # must not infer action success from the placeholder result_code in that case.
+    result_known: bool = True
 
     @property
     def success(self) -> bool:
-        return self.result_code == CommandResult.SUCCESS
+        return self.result_known and self.result_code == CommandResult.SUCCESS
 
     @property
     def not_applicable(self) -> bool:
-        return self.result_code == CommandResult.NOT_APPLICABLE
+        return (
+            self.result_known
+            and self.result_code == CommandResult.NOT_APPLICABLE
+        )
 
 
 @dataclass
@@ -655,6 +664,10 @@ class NarwalState:
 
     # Device identity
     device_info: DeviceInfo | None = None
+    capabilities: CapabilityMap = field(default_factory=dict)
+    capabilities_fetched: bool = False
+    config_snapshot: ConfigSnapshot | None = None
+    current_clean_task: CurrentCleanTask | None = None
 
     # Session
     session_id: str = ""
@@ -727,6 +740,7 @@ class NarwalState:
 
     # Raw data for fields we haven't fully decoded yet
     raw_base_status: dict[str, Any] = field(default_factory=dict)
+    raw_working_status_value: int | None = None
     raw_working_status: dict[str, Any] = field(default_factory=dict)
     raw_aux_status: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -939,7 +953,8 @@ class NarwalState:
                 self.dock_field47 = 0
         # Field 3 is a nested message: {1: state_int, ...}
         # Sub-field layout differs across firmware versions:
-        #   Old FW: {1: ws, 2: paused, 3: dock_presence, 7: returning, 10: dock_sub, 12: dock_activity}
+        #   Old FW: {1: ws, 2: paused, 3: dock_presence, 7: returning,
+        #            10: dock_sub, 12: dock_activity}
         #   v01.07.23+: {1: ws, 4: ?, 11: ?} — sub-fields 2/3/7/10/12 absent
         # bbp may also return a list for repeated messages.
         field3 = decoded.get("3")
@@ -948,7 +963,13 @@ class NarwalState:
         if isinstance(field3, dict):
             if "1" in field3:
                 try:
-                    self.working_status = WorkingStatus(int(field3["1"]))
+                    self.raw_working_status_value = int(field3["1"])
+                except (ValueError, TypeError):
+                    self.raw_working_status_value = None
+                try:
+                    if self.raw_working_status_value is None:
+                        raise ValueError("working status is not numeric")
+                    self.working_status = WorkingStatus(self.raw_working_status_value)
                 except (ValueError, TypeError):
                     raw_val = field3["1"]
                     _LOGGER.warning(

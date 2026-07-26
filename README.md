@@ -1,126 +1,199 @@
 # Narwal Robot Vacuum — Home Assistant Integration
 
-A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant.io/) custom integration for Narwal robot vacuums. Communicates directly with your vacuum over your local network via WebSocket — no cloud account or internet connection required.
+A local-first, unofficial [Home Assistant](https://www.home-assistant.io/)
+integration for Narwal robot vacuums that expose the Narwal WebSocket service
+on the local network. It provides the established vacuum controls, sensors,
+rooms, and live map without requiring a Narwal cloud login.
 
-> **v1.0.0** — Vacuum control, sensors, live map with room labels, obstacle overlay, and room-specific cleaning. Available via HACS.
+> **App parity is in progress, not complete.** This fork is adding protocol and
+> read-only diagnostic coverage first, then enabling writes only after
+> model-and-firmware-specific physical validation. See
+> [App parity status](docs/PARITY_STATUS.md) for the evidence boundary and
+> roadmap.
 
-## Device Compatibility
+## Device compatibility
 
-This integration uses a **local WebSocket connection on port 9002**. Only models that expose this port are supported.
+The local client connects to WebSocket port 9002. Models using another local
+protocol or the Narwal cloud need a separate transport.
 
-| Model | Status | Notes |
-|-------|--------|-------|
-| **Narwal Flow** (AX12) | **Working** | Primary development target. Firmware v01.07.22+ requires a loaded map for `vacuum.start` (auto-fallback handles this — see [#36](https://github.com/sjmotew/NarwalIntegration/issues/36)). |
-| **Narwal Flow 2** (QxMSPG6VSO) | **Working** | Room labels use Flow 2 names (Master Bedroom / Bathroom / Corridor — [#22](https://github.com/sjmotew/NarwalIntegration/issues/22)) |
-| **Freo Z10 Ultra** (CX4) | **Working** | Community confirmed |
-| **Freo X10 Pro** (AX15) | **Working** | Community confirmed ([#12](https://github.com/sjmotew/NarwalIntegration/issues/12)) |
-| **Freo Z Ultra** (CX7) | **Not Compatible** | Port 9002 open but no local broadcasts; cloud-only ([#5](https://github.com/sjmotew/NarwalIntegration/issues/5), confirmed by @Folg0re) |
-| **Freo X Ultra** (AX18/AX19) | **Not Compatible** | Uses ZeroMQ (port 6789) + Tuya cloud, not WebSocket ([#4](https://github.com/sjmotew/NarwalIntegration/issues/4)) |
-| **Freo X Plus** | **Not Compatible** | Cloud-only — no local API |
-| **Narwal J-series** (J1/J4/J5) | **Not Compatible** | J1: HTTP-only (port 8080); J4/J5: cloud-only (Tuya) |
+| Model | Local integration status | Parity status |
+| --- | --- | --- |
+| **Narwal Flow** (AX12) | Existing local-WebSocket integration | Baseline controls and map; advanced app writes are not assumed from other models. |
+| **Narwal Flow 2** | Existing local-WebSocket integration | Read/protocol work can be tested, but no exact product-and-firmware pair is marked physically validated for parameterized writes in this milestone. |
+| **Freo Z10 Ultra** (CX4) | Community-reported local-WebSocket compatibility | Advanced writes remain unvalidated and fail-closed. |
+| **Freo X10 Pro** (AX15) | Local-WebSocket baseline, community confirmed in [upstream #12](https://github.com/sjmotew/NarwalIntegration/issues/12) | Read-only discovery plus a narrowly gated, supervised parameterized-clean validation service on one exact firmware. |
+| **Freo Z Ultra** (CX7) | Not compatible with this local client | Port 9002 alone is insufficient; local broadcasts were not observed in [upstream #5](https://github.com/sjmotew/NarwalIntegration/issues/5). |
+| **Freo X Ultra** (AX18/AX19) | Not compatible with this local client | Uses a different transport; see [upstream #4](https://github.com/sjmotew/NarwalIntegration/issues/4). |
+| **Freo X Plus** (BX1) | Not compatible with this local client | Cloud-backed transport boundary; requires a separate provider, authentication, and validation effort. |
+| **Narwal J-series** | Not compatible with this local client | Different local protocol or cloud transport, depending on model. |
 
-Models marked **Not Compatible** use a different protocol or are cloud-only. This is a hardware/firmware limitation.
+Compatibility is determined by more than a model name. Product key, firmware,
+capability response, and the observed physical result all matter. If port 9002
+is open on another model, collect read-only diagnostics before testing writes.
 
-**Other models?** Check with `nmap -p 9002 <your-vacuum-ip>`. If open, [open an issue](https://github.com/sjmotew/NarwalIntegration/issues/new/choose) with your model and results.
+## What works today
 
-## Features
+### Existing compatibility controls
 
-### Vacuum Control
-- **Start / Stop / Pause / Resume** — all commands validated on hardware
-- **Room-specific cleaning** — select rooms from the HA UI (requires HA 2026.3+)
-- **Return to dock** / **Locate** (robot announces "Robot is here")
-- **Fan speed** — Quiet, Normal, Strong, Max (set-only; robot doesn't broadcast current level)
+- Start, pause, resume, stop, return to dock, and locate
+- Room/segment cleaning through the established compatibility path
+- Battery, charging, cleaning area/time, firmware, task, and station-state
+  sensors
+- Local map, room labels, dock marker, and live cleaning trail
+- WebSocket push updates, reconnect, wake, heartbeat, and polling fallback
 
-### Sensors
-- Battery level, cleaning area, cleaning time, firmware version
-- Docked status (binary sensor), charging state (Charging / Fully Charged / Not Charging)
+Normal whole-house start stays on its compatibility command. This fork does not
+convert it into a guessed “all rooms” parameterized task.
 
-### Live Map
-- Color-coded floor plan with room labels (all rooms — user-named and auto-generated)
-- Furniture/obstacle overlay from the robot's stored map data
-- Dock marker and live robot trail during cleaning (~1.5s refresh)
+### Read-only parity foundation
 
-### Connectivity
-- Real-time WebSocket push updates
-- Auto-reconnect with exponential backoff
-- Wake system for sleeping robots + keepalive heartbeat
-- 60-second polling fallback
+- Full Narwal frame/header parsing, including multi-byte lengths and recovered
+  response-routing metadata
+- Topic-aware response matching when the robot supplies routing metadata, while
+  retaining unrelated routed responses
+- Capability decoding with named and raw field diagnostics
+- Conservative `config/get` and current-clean-task decoders that retain unknown
+  fields
+- Dynamic model/profile resolution used to keep unvalidated writes fail-closed
+
+These decoders are code and diagnostic foundations. A decoded field, command
+name, or advertised capability does not prove that a corresponding write is
+safe.
+
+### Supervised Freo X10 Pro validation
+
+The `narwal.validate_parameterized_clean` service can send an app-derived parameterized room
+clean only when all of these conditions hold:
+
+- the robot identifies as AX15 product key `CNbforyZWI`;
+- firmware is exactly `v01.03.10.03`;
+- the required multi-zone capability is advertised;
+- **Experimental parameterized cleaning** is enabled in the integration
+  options; and
+- that individual service call sets `confirm_unverified: true`.
+
+This is a supervised validation tool, not a supported automation surface. Stay
+near the robot with Stop available and verify its physical behavior. An
+`ACCEPTED` response does not prove that every requested parameter was followed.
+Unknown firmware remains disabled by default.
+
+Example:
+
+```yaml
+action: narwal.validate_parameterized_clean
+target:
+  entity_id: vacuum.narwal
+data:
+  rooms: [1]
+  mode: vacuum_and_mop
+  suction: standard
+  water: normal
+  mop_strength: normal
+  passes: 1
+  confirm_unverified: true
+```
 
 ## Installation
 
-### HACS (Recommended)
+### HACS
 
-1. Open **HACS** > three-dot menu > **Custom repositories**
-2. Add: `https://github.com/sjmotew/NarwalIntegration` (category: Integration)
-3. Find **Narwal Flow Robot Vacuum** and click **Download**
-4. **Restart Home Assistant**
+1. Open **HACS** > three-dot menu > **Custom repositories**.
+2. Add `https://github.com/sudhanshug16/NarwalIntegration` as an
+   **Integration** repository.
+3. Find **Narwal Robot Vacuum** and select **Download**.
+4. Restart Home Assistant.
 
 ### Manual
 
-1. Copy `custom_components/narwal/` to your HA `config/custom_components/` directory
-2. **Restart Home Assistant**
+1. Copy `custom_components/narwal/` into
+   `config/custom_components/narwal/`.
+2. Restart Home Assistant.
 
 ### Setup
 
-1. **Settings > Devices & Services > Add Integration** > search "Narwal"
-2. Enter your vacuum's IP address and select your model
-3. Entities are created automatically
-
-> **Tip:** Assign a static IP to your vacuum in your router.
+1. Assign the vacuum a stable IP address in the router.
+2. In Home Assistant, open **Settings > Devices & Services > Add Integration**.
+3. Search for **Narwal**, enter the vacuum IP, and select its model.
+4. Keep the Narwal mobile app closed while Home Assistant is connected; some
+   devices permit only one active connection.
 
 ## Requirements
 
-- Narwal vacuum on the same local network as Home Assistant
-- Port 9002 reachable (no firewall blocking)
+- A compatible vacuum and Home Assistant on the same local network
+- WebSocket port 9002 reachable from Home Assistant
 - Home Assistant 2025.1.0+ / Python 3.12+
 
-## Known Limitations
+## Deliberately unsupported parity areas
 
-- **Wake from deep sleep is unreliable** — robot may not respond after long idle periods. Opening the Narwal app briefly can help.
-- **Single connection** — close the Narwal app before using HA to avoid conflicts.
-- **Fan speed is set-only** — robot doesn't broadcast its current level.
-- **Default clean settings** — start and room-specific clean use max suction, wet mop, single pass. Per-room customization is not yet available.
-- **Map may be stale** — robot can return an old map. A new clean cycle typically refreshes it.
+This milestone does not expose the following as supported writes:
 
-## Future Features (On Hold)
+- station washing, drying, dust collection, lighting, or maintenance actions;
+- `config/set` settings;
+- map mutation, virtual walls/no-go zones, boundary or safety-distance edits;
+- camera, obstacle media, patrol, cruise, or telecontrol;
+- pumps, drain/water exchange, detergent, or plumbing controls;
+- firmware download, upgrade, or rollback; or
+- cloud account, sharing, binding, notification, or history operations.
 
-These features have been researched and probed but are **on hold** pending further reverse engineering:
+The Freo X Plus/BX1 cannot be supported by adding AX15 WebSocket topics. It
+needs a separate cloud provider with secure credential handling and an
+independent validation matrix.
 
-| Feature | Status | Blocker |
-|---------|--------|---------|
-| **Camera snapshots** | Client method works (robot returns ~170KB) | Image data is **AES-encrypted** — APK reverse engineering needed for decryption key |
-| **Camera LED control** | Partial response from robot | Correct payload format unconfirmed; needs idle-state testing |
-| **Vision obstacle overlay** | Built, tested, and removed | Robot broadcasts raw AI candidates (3-6x more than app shows), not confirmed detections. Unusable for map overlay. |
-| **Patrol / cruise mode** | Topics identified in APK | Not yet probed; depends on camera working first |
-| **Custom clean settings** | Protocol known | Not yet exposed in HA UI |
+For the complete implementation table, the planned map-edit safety workflow,
+and the route toward app parity, read
+[docs/PARITY_STATUS.md](docs/PARITY_STATUS.md).
 
-Camera snapshot and LED entities will be added once the AES decryption key is extracted from the Narwal APK.
+## Known limitations
+
+- Deep-sleep wake-up can be unreliable. Briefly opening the Narwal app may wake
+  the robot; close it again before Home Assistant reconnects.
+- The robot may allow only one WebSocket client at a time.
+- Some reported values and commands vary by product key and firmware.
+- A capability bit describes firmware advertisement, not validated behavior.
+- Maps can be stale until a new cleaning cycle refreshes them.
+- Firmware updates may change the reverse-engineered protocol without notice.
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| "Cannot connect" during setup | Verify IP and that port 9002 is reachable. Robot must be powered on. |
-| Entities show "Unavailable" | Robot may be asleep. Open Narwal app briefly to wake it. |
-| Map not showing | Map loads after robot wakes. A new clean refreshes a stale map. |
-| Commands not responding | Close the Narwal app — only one WebSocket connection at a time. |
-| Z10 Ultra disconnects | Re-add the integration with the correct model selected. |
+| Problem | What to check |
+| --- | --- |
+| Cannot connect during setup | Confirm the vacuum IP, power state, and reachability of port 9002 from Home Assistant. |
+| Entities are unavailable | Wake the robot, close the Narwal app, and wait for Home Assistant to reconnect. |
+| Map is missing or stale | Wake the robot; a new clean often refreshes the stored map. |
+| Command receives conflict/not applicable | Wait until the robot and station are idle, then retry a supported compatibility action. |
+| Experimental service is unavailable | Confirm exact AX15 identity/firmware, capability advertisement, and the integration option. Do not bypass the profile gate. |
 
-## Reporting Issues
+## Reporting issues
 
-Use the [issue templates](https://github.com/sjmotew/NarwalIntegration/issues/new/choose) — they collect your HA version, model, and debug logs for faster diagnosis.
+Open an issue in
+[this fork](https://github.com/sudhanshug16/NarwalIntegration/issues) with:
+
+- displayed model, product key, firmware, and dock/station model;
+- Home Assistant and integration versions;
+- whether the Narwal app was connected at the same time;
+- relevant debug logs with device identifiers, tokens, account data, and map
+  coordinates redacted; and
+- the expected and observed physical behavior.
+
+Do not post cloud credentials, access tokens, complete packet captures, or
+unredacted home maps.
 
 ## Disclaimer
 
-This is an **unofficial**, community-developed integration — not affiliated with or endorsed by Narwal. The local protocol was reverse-engineered from network traffic and the Narwal mobile application.
+This project is unofficial, community-developed, and not affiliated with or
+endorsed by Narwal. The protocol was reverse-engineered from local traffic and
+the mobile application.
 
-- **Use at your own risk.** No warranty.
-- **No cloud dependency.** No external data transmission.
-- **Firmware updates** from Narwal may break this integration at any time.
+- Use it at your own risk; there is no warranty.
+- Local-compatible models do not require a cloud account for this integration.
+- Experimental validation must be supervised.
+- A Narwal firmware update may break or change behavior at any time.
 
 ## Contributing
 
-Contributions and testing welcome! If you have a non-Flow Narwal model, testing reports are especially valuable.
+Testing reports and carefully redacted captures are welcome. Before promoting a
+write to supported status, use the validation record checklist in
+[docs/PARITY_STATUS.md](docs/PARITY_STATUS.md#validation-record-checklist).
 
 ## License
 

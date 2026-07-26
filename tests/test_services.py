@@ -1,5 +1,7 @@
 """Tests for Narwal integration services."""
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +9,16 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
+
 import tests.ha_stubs
 
 tests.ha_stubs.install()
 
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from homeassistant.helpers import service
+
 from custom_components.narwal import (
+    FIELD_CONFIRM_UNVERIFIED,
     FIELD_MODE,
     FIELD_MOP_STRENGTH,
     FIELD_PASSES,
@@ -23,11 +30,12 @@ from custom_components.narwal import (
     _async_validate_clean_rooms_targets,
     async_setup,
 )
-from custom_components.narwal.const import DOMAIN, SERVICE_CLEAN_ROOMS
+from custom_components.narwal.const import (
+    DOMAIN,
+    SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
+)
 from custom_components.narwal.coordinator import NarwalCoordinator
 from custom_components.narwal.narwal_client import CommandResult
-from homeassistant.exceptions import HomeAssistantError, Unauthorized
-from homeassistant.helpers import service
 
 
 def test_clean_rooms_awaits_entity_target_extraction() -> None:
@@ -36,10 +44,17 @@ def test_clean_rooms_awaits_entity_target_extraction() -> None:
         robot_awake=True,
         state=MagicMock(),
         start_rooms=AsyncMock(
-            return_value=SimpleNamespace(result_code=CommandResult.SUCCESS)
+            return_value=SimpleNamespace(
+                result_code=CommandResult.SUCCESS,
+                result_known=True,
+            )
         ),
     )
-    coordinator = SimpleNamespace(client=client, async_set_updated_data=MagicMock())
+    coordinator = SimpleNamespace(
+        client=client,
+        async_set_updated_data=MagicMock(),
+        parameterized_clean_validation_enabled=True,
+    )
     call = SimpleNamespace(
         context=SimpleNamespace(user_id=None),
         data={
@@ -50,6 +65,7 @@ def test_clean_rooms_awaits_entity_target_extraction() -> None:
             FIELD_WATER: "normal",
             FIELD_MOP_STRENGTH: "normal",
             FIELD_PASSES: 1,
+            FIELD_CONFIRM_UNVERIFIED: True,
         }
     )
 
@@ -76,7 +92,7 @@ def test_clean_rooms_awaits_entity_target_extraction() -> None:
     client.start_rooms.assert_awaited_once()
     hass.services.async_register.assert_called_once_with(
         DOMAIN,
-        SERVICE_CLEAN_ROOMS,
+        SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
         handler,
         schema=ANY,
     )
@@ -96,6 +112,57 @@ async def test_clean_rooms_requires_an_explicit_target() -> None:
 
     with pytest.raises(HomeAssistantError, match="Target a Narwal vacuum"):
         await _async_get_service_coordinators(hass, [])
+
+
+def test_clean_rooms_requires_experimental_write_opt_in() -> None:
+    hass = MagicMock()
+    coordinator = SimpleNamespace(
+        parameterized_clean_validation_enabled=False,
+        client=MagicMock(),
+    )
+    call = SimpleNamespace(
+        context=SimpleNamespace(user_id=None),
+        data={
+            "entity_id": ["vacuum.flow_2"],
+            FIELD_ROOMS: [1],
+            FIELD_MODE: "vacuum",
+            FIELD_SUCTION: "standard",
+            FIELD_WATER: "normal",
+            FIELD_MOP_STRENGTH: "normal",
+            FIELD_PASSES: 1,
+            FIELD_CONFIRM_UNVERIFIED: True,
+        },
+    )
+
+    _async_register_services(hass)
+    handler = hass.services.async_register.call_args.args[2]
+
+    with (
+        patch(
+            "custom_components.narwal._async_get_service_coordinators",
+            new=AsyncMock(return_value=[coordinator]),
+        ),
+        patch(
+            "custom_components.narwal._async_validate_clean_rooms_targets",
+            new=AsyncMock(return_value=["vacuum.flow_2"]),
+        ),
+        pytest.raises(HomeAssistantError, match="Unverified"),
+    ):
+        asyncio.run(handler(call))
+
+
+def test_clean_rooms_requires_confirmation_on_every_call() -> None:
+    hass = MagicMock()
+    call = SimpleNamespace(
+        context=SimpleNamespace(user_id=None),
+        data={FIELD_CONFIRM_UNVERIFIED: False},
+    )
+
+    _async_register_services(hass)
+    handler = hass.services.async_register.call_args.args[2]
+
+    with pytest.raises(HomeAssistantError, match="confirm_unverified"):
+        asyncio.run(handler(call))
 
 
 async def test_clean_rooms_rejects_unauthorized_target() -> None:

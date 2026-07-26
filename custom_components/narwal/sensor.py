@@ -18,7 +18,9 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import NarwalState, WorkingStatus
+from .narwal_client import NarwalState, WorkingStatus, named_capabilities
+from .narwal_client.config import config_snapshot_attributes
+from .narwal_client.task import current_task_attributes
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -137,6 +139,10 @@ async def async_setup_entry(
     ]
     entities.append(NarwalChargingStateSensor(coordinator))
     entities.append(NarwalTaskStatusSensor(coordinator))
+    entities.append(NarwalCapabilitiesSensor(coordinator))
+    entities.append(NarwalConfigSnapshotSensor(coordinator))
+    entities.append(NarwalCurrentTaskSensor(coordinator))
+    entities.append(NarwalProtocolProfileSensor(coordinator))
     async_add_entities(entities)
 
 
@@ -272,3 +278,132 @@ class NarwalTaskStatusSensor(NarwalEntity, SensorEntity):
         if value == "error":
             return "mdi:alert-circle-outline"
         return "mdi:information-outline"
+
+
+class NarwalCapabilitiesSensor(NarwalEntity, SensorEntity):
+    """Diagnostic inventory of capabilities advertised by the robot."""
+
+    _attr_translation_key = "capabilities"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:list-status"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        """Initialize the capability inventory sensor."""
+        super().__init__(coordinator)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_capabilities"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the number of explicitly advertised feature fields."""
+        state = self.coordinator.data
+        if state is None or not state.capabilities_fetched:
+            return None
+        return len(state.capabilities)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose stable names and exact raw field values for diagnostics."""
+        state = self.coordinator.data
+        if state is None:
+            return {}
+        return {
+            "fetch_completed": state.capabilities_fetched,
+            "advertised": named_capabilities(state.capabilities),
+            "raw_fields": {
+                str(feature_id): value
+                for feature_id, value in sorted(state.capabilities.items())
+            },
+        }
+
+
+class NarwalConfigSnapshotSensor(NarwalEntity, SensorEntity):
+    """Read-only configuration snapshot decoded from config/get."""
+
+    _attr_translation_key = "config_snapshot"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:tune-variant"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_config_snapshot"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data
+        if state is None or state.config_snapshot is None:
+            return None
+        return len(state.config_snapshot.values)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        if state is None or state.config_snapshot is None:
+            return {}
+        return config_snapshot_attributes(state.config_snapshot)
+
+
+class NarwalCurrentTaskSensor(NarwalEntity, SensorEntity):
+    """Read-only view of the robot's cached current CleanTask."""
+
+    _attr_translation_key = "current_clean_task"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:clipboard-text-clock-outline"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_current_clean_task"
+
+    @property
+    def native_value(self) -> int | None:
+        state = self.coordinator.data
+        if state is None or state.current_clean_task is None:
+            return None
+        return state.current_clean_task.task_type
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        if state is None or state.current_clean_task is None:
+            return {}
+        return current_task_attributes(state.current_clean_task)
+
+
+class NarwalProtocolProfileSensor(NarwalEntity, SensorEntity):
+    """Resolved identity and fail-closed operation-gating diagnostics."""
+
+    _attr_translation_key = "protocol_profile"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:shield-search"
+
+    def __init__(self, coordinator: NarwalCoordinator) -> None:
+        super().__init__(coordinator)
+        device_id = coordinator.config_entry.data["device_id"]
+        self._attr_unique_id = f"{device_id}_protocol_profile"
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.device_profile.hardware_model
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        state = self.coordinator.data
+        profile = self.coordinator.device_profile
+        return {
+            "product_key": profile.product_key,
+            "firmware_version": profile.firmware_version,
+            "display_model": profile.display_model,
+            "parameterized_clean_validated": (
+                profile.parameterized_clean_validated
+            ),
+            "parameterized_clean_validation_enabled": (
+                profile.parameterized_clean_validation_enabled
+            ),
+            "station_actions": sorted(profile.station_actions),
+            "config_writes_enabled": profile.config_writes_enabled,
+            "raw_working_status": (
+                state.raw_working_status_value if state is not None else None
+            ),
+        }

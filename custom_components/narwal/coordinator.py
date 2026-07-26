@@ -11,10 +11,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .const import CONF_ENABLE_EXPERIMENTAL_CLEANING, DOMAIN
 from .narwal_client import NarwalClient, NarwalConnectionError, NarwalState
 from .narwal_client.const import ACTIVE_CLEANING_STATUSES, WorkingStatus
-
-from .const import DOMAIN
+from .profile import DeviceProfile, profile_for_client
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +63,29 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
         self.select_options: dict[str, str] = {}
 
+    @property
+    def device_profile(self) -> DeviceProfile:
+        """Return the current model/firmware validation profile."""
+        return profile_for_client(
+            self.client,
+            experimental_cleaning=bool(
+                self.config_entry.options.get(
+                    CONF_ENABLE_EXPERIMENTAL_CLEANING,
+                    False,
+                )
+            ),
+        )
+
+    @property
+    def parameterized_clean_enabled(self) -> bool:
+        """Return whether normal parameterized cleaning is validated."""
+        return self.device_profile.parameterized_clean_enabled
+
+    @property
+    def parameterized_clean_validation_enabled(self) -> bool:
+        """Return whether the supervised AX15 validation service is enabled."""
+        return self.device_profile.parameterized_clean_validation_enabled
+
     async def async_setup(self) -> None:
         """Connect to the vacuum and start the WebSocket listener.
 
@@ -80,9 +103,24 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             _LOGGER.debug("Could not fetch device info at startup")
 
         try:
+            await self.client.get_feature_list()
+        except Exception:
+            _LOGGER.debug("Could not fetch device capabilities at startup")
+
+        try:
             await self.client.get_status(full_update=True)
         except Exception:
             _LOGGER.debug("Could not fetch initial status")
+
+        try:
+            await self.client.get_config()
+        except Exception:
+            _LOGGER.debug("Could not fetch read-only configuration snapshot")
+
+        try:
+            await self.client.get_current_task()
+        except Exception:
+            _LOGGER.debug("Could not fetch current clean-task diagnostics")
 
         try:
             await self.client.get_map()
@@ -246,6 +284,24 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         if self.client.state.map_data is None:
             try:
                 await self.client.get_map()
+            except Exception:
+                pass
+
+        # These queries are read-only. Retry missing discovery snapshots once
+        # the robot is awake, and refresh the current task while work is active.
+        if not self.client.state.capabilities_fetched:
+            try:
+                await self.client.get_feature_list()
+            except Exception:
+                pass
+        if self.client.state.config_snapshot is None:
+            try:
+                await self.client.get_config()
+            except Exception:
+                pass
+        if self.client.state.working_status in ACTIVE_CLEANING_STATUSES:
+            try:
+                await self.client.get_current_task()
             except Exception:
                 pass
 

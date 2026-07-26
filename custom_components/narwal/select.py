@@ -13,11 +13,10 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from . import NarwalConfigEntry
 from .const import (
     FAN_SPEED_LIST,
-    FAN_SPEED_MAP,
 )
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CommandResult, MopHumidity, WorkingStatus
+from .narwal_client import Capability, WorkingStatus, capability_enabled
 
 MODE_OPTIONS = ("Vacuum", "Mop", "Vacuum then mop", "Vacuum and mop")
 DEFAULT_MODE = "Vacuum and mop"
@@ -36,7 +35,7 @@ ACTIVE_CLEANING_STATUSES = (
 
 MOP_MODES = {"Mop", "Vacuum then mop", "Vacuum and mop"}
 VACUUM_MODES = {"Vacuum", "Vacuum then mop", "Vacuum and mop"}
-START_ONLY_SETTINGS = {"mode", "passes", "route", "scrub"}
+START_ONLY_SETTINGS = {"mode", "suction", "water", "scrub", "route", "passes"}
 
 RUNTIME_SUCTION_KEY = "runtime_suction"
 RUNTIME_WATER_KEY = "runtime_water"
@@ -50,13 +49,6 @@ SETTING_KEYS = {
     "passes",
 }
 
-WATER_OPTION_VALUES: dict[str, MopHumidity] = {
-    "Dry": MopHumidity.DRY,
-    "Normal": MopHumidity.NORMAL,
-    "Wet": MopHumidity.WET,
-}
-
-
 @dataclass(frozen=True, kw_only=True)
 class NarwalSettingSelectEntityDescription(SelectEntityDescription):
     """Describes a Narwal setting select."""
@@ -65,6 +57,7 @@ class NarwalSettingSelectEntityDescription(SelectEntityDescription):
     setting_options: tuple[str, ...]
     default_option: str
     icon: str
+    required_feature: Capability | None = None
 
 
 SETTING_SELECT_DESCRIPTIONS: tuple[NarwalSettingSelectEntityDescription, ...] = (
@@ -81,7 +74,7 @@ SETTING_SELECT_DESCRIPTIONS: tuple[NarwalSettingSelectEntityDescription, ...] = 
         setting_key="suction",
         translation_key="suction",
         setting_options=SUCTION_OPTIONS,
-        default_option="AI",
+        default_option="Normal",
         icon="mdi:fan",
     ),
     NarwalSettingSelectEntityDescription(
@@ -89,7 +82,7 @@ SETTING_SELECT_DESCRIPTIONS: tuple[NarwalSettingSelectEntityDescription, ...] = 
         setting_key="water",
         translation_key="water",
         setting_options=WATER_OPTIONS,
-        default_option="Wet",
+        default_option="Normal",
         icon="mdi:water",
     ),
     NarwalSettingSelectEntityDescription(
@@ -97,7 +90,7 @@ SETTING_SELECT_DESCRIPTIONS: tuple[NarwalSettingSelectEntityDescription, ...] = 
         setting_key="scrub",
         translation_key="scrub",
         setting_options=SCRUB_OPTIONS,
-        default_option="High",
+        default_option="Normal",
         icon="mdi:brush",
     ),
     NarwalSettingSelectEntityDescription(
@@ -105,15 +98,16 @@ SETTING_SELECT_DESCRIPTIONS: tuple[NarwalSettingSelectEntityDescription, ...] = 
         setting_key="route",
         translation_key="route",
         setting_options=ROUTE_OPTIONS,
-        default_option="Meticulous",
+        default_option="Standard",
         icon="mdi:routes",
+        required_feature=Capability.OVERLAP_ADJUST,
     ),
     NarwalSettingSelectEntityDescription(
         key="passes",
         setting_key="passes",
         translation_key="passes",
         setting_options=PASSES_OPTIONS,
-        default_option="2",
+        default_option="1",
         icon="mdi:counter",
     ),
 )
@@ -126,9 +120,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal select entities."""
     coordinator = entry.runtime_data
+    if not coordinator.parameterized_clean_enabled:
+        return
+    capabilities = coordinator.client.state.capabilities
     entities: list[SelectEntity] = [
         NarwalSettingSelect(coordinator, description)
         for description in SETTING_SELECT_DESCRIPTIONS
+        if description.required_feature is None
+        or capability_enabled(capabilities, description.required_feature)
     ]
     async_add_entities(entities)
 
@@ -187,6 +186,15 @@ class NarwalSettingSelect(NarwalEntity, SelectEntity, RestoreEntity):
         if not super().available:
             return False
 
+        feature = self.entity_description.required_feature
+        state = self.coordinator.data
+        if (
+            feature is not None
+            and state is not None
+            and not capability_enabled(state.capabilities, feature)
+        ):
+            return False
+
         mode = self._selected_mode
         key = self.entity_description.setting_key
         if key == "water" and mode not in MOP_MODES:
@@ -231,29 +239,6 @@ class NarwalSettingSelect(NarwalEntity, SelectEntity, RestoreEntity):
             raise HomeAssistantError("This Narwal setting cannot be changed mid-clean")
         if key == "suction" and option == "AI" and self._is_cleaning_or_paused:
             raise HomeAssistantError("AI suction cannot be selected mid-clean")
-
-        response = None
-        if self._is_cleaning_or_paused:
-            if key == "suction":
-                response = await self.coordinator.client.set_fan_speed(
-                    FAN_SPEED_MAP[option]
-                )
-            elif key == "water":
-                response = await self.coordinator.client.set_mop_humidity(
-                    WATER_OPTION_VALUES[option]
-                )
-
-        if (
-            response is not None
-            and response.result_code not in (0, CommandResult.SUCCESS)
-        ):
-            try:
-                result_name = CommandResult(response.result_code).name
-            except ValueError:
-                result_name = f"UNKNOWN({response.result_code})"
-            raise HomeAssistantError(
-                f"Narwal setting command failed: {result_name}"
-            )
 
         self._settings[key] = option
         self.async_write_ha_state()

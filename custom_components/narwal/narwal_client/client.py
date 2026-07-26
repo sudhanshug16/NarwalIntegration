@@ -6,12 +6,15 @@ import asyncio
 import logging
 import random
 import time
+from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 import websockets
 import websockets.exceptions
 
+from .capabilities import CapabilityMap, normalize_feature_response
+from .config import ConfigSnapshot, decode_get_config_response
 from .const import (
     BROADCAST_STALE_TIMEOUT,
     COMMAND_RESPONSE_TIMEOUT,
@@ -37,6 +40,7 @@ from .const import (
     TOPIC_CMD_GET_ALL_MAPS,
     TOPIC_CMD_GET_BASE_STATUS,
     TOPIC_CMD_GET_CLEAN_PROGRESS_INFO,
+    TOPIC_CMD_GET_CONFIG,
     TOPIC_CMD_GET_CURRENT_TASK,
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME,
@@ -79,6 +83,7 @@ from .protocol import (
     build_frame,
     parse_frame,
 )
+from .task import CurrentCleanTask, decode_current_task_response
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,6 +103,65 @@ _AUX_STATUS_TOPICS = {
     TOPIC_ROBOT_CURRENT_STATUS,
     TOPIC_ROBOT_TASK_STATUS,
 }
+_MAX_RETAINED_RESPONSES = 64
+
+
+def _is_response_message(message: NarwalMessage) -> bool:
+    """Return whether a parsed frame is a command response.
+
+    Current frames expose response routing in ``Header.properties`` and may
+    start with any Header field (for example UUID field 2).  The field-5 check
+    is retained only for historical direct response-topic envelopes.
+    """
+    properties = message.header.properties
+    if properties is not None and (
+        properties.response_url is not None
+        or properties.correlation_data is not None
+    ):
+        return True
+    return (
+        message.field_tag == PROTOBUF_FIELD5_TAG
+        and message.header.url is None
+    )
+
+
+def _normalise_response_topic(topic: str) -> str:
+    """Normalise an absolute/short topic and remove its response suffix."""
+    normalised = "/".join(part for part in topic.strip().split("/") if part)
+    if normalised.endswith("/response"):
+        normalised = normalised[: -len("/response")]
+    return normalised
+
+
+def _response_matches_topic(
+    message: NarwalMessage,
+    *,
+    expected_full_topic: str,
+    expected_short_topic: str,
+) -> bool:
+    """Return whether a routed response belongs to the active command.
+
+    A response URL is authoritative when supplied.  Correlation-only frames
+    cannot be matched because this client deliberately continues to send the
+    robot-compatible URL-only request Header.  A field-5 frame without routing
+    metadata remains a narrow FIFO fallback for older firmware.
+    """
+    response_url = message.header.response_url
+    if response_url is None:
+        if message.header.correlation_data is not None:
+            return False
+        return (
+            message.field_tag == PROTOBUF_FIELD5_TAG
+            and message.header.url is None
+        )
+
+    response_topic = _normalise_response_topic(response_url)
+    expected_full = _normalise_response_topic(expected_full_topic)
+    expected_short = _normalise_response_topic(expected_short_topic)
+    return (
+        response_topic in (expected_full, expected_short)
+        or response_topic.endswith(f"/{expected_short}")
+    )
 
 
 def _short_repr(value: Any, limit: int = 1200) -> str:
@@ -219,8 +283,15 @@ class NarwalClient:
         self._last_active_working_status_time: float = 0.0
         self._last_aux_log_time: dict[str, float] = {}
         self._last_base_status_log: tuple[Any, Any, Any] | None = None
-        # Queue for field5 command responses
+        # Queue for command responses classified from Header routing metadata,
+        # with a narrow field-5 fallback for old firmware.
         self._response_queue: asyncio.Queue[NarwalMessage] = asyncio.Queue()
+        # Keep routed frames which cannot belong to the active request. They
+        # are intentionally not reused by a later request: without sending a
+        # request UUID, an already-received frame is necessarily stale.
+        self._retained_responses: deque[NarwalMessage] = deque(
+            maxlen=_MAX_RETAINED_RESPONSES
+        )
         # Lock to prevent concurrent send_command calls from racing on the queue
         self._command_lock = asyncio.Lock()
 
@@ -431,8 +502,15 @@ class NarwalClient:
             except ProtocolError:
                 continue
 
-            # Check field5 response — get_device_info returns device_id in field 2
-            if msg.field_tag == PROTOBUF_FIELD5_TAG and msg.payload:
+            # get_device_info responses return device_id in payload field 2.
+            if _is_response_message(msg) and msg.payload:
+                if not _response_matches_topic(
+                    msg,
+                    expected_full_topic=self._full_topic(cmd),
+                    expected_short_topic=cmd,
+                ):
+                    self._retain_response(msg)
+                    continue
                 try:
                     decoded = self._decode_protobuf(msg.payload)
                     raw_id = decoded.get("2", b"")
@@ -449,9 +527,14 @@ class NarwalClient:
                         return self.device_id
                 except Exception:
                     _LOGGER.debug("Failed to decode response payload")
+                if (
+                    msg.header.response_url is not None
+                    or msg.header.correlation_data is not None
+                ):
+                    self._retain_response(msg)
 
-            # Fallback: broadcast messages (field4/0x22) have device_id in topic
-            if msg.field_tag != PROTOBUF_FIELD5_TAG and msg.topic:
+            # Fallback: broadcast messages have device_id in their URL topic.
+            if not _is_response_message(msg) and msg.topic:
                 parts = msg.topic.split("/")
                 # Topic format: /{product_key}/{device_id}/{category}/{type}
                 if len(parts) >= 4 and parts[2]:
@@ -478,16 +561,36 @@ class NarwalClient:
         if not self.connected:
             return
         drained = 0
+        retained = 0
         while True:
             try:
                 data = await asyncio.wait_for(self._ws.recv(), timeout=0.05)
                 drained += 1
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             except Exception:
                 break
+            if not isinstance(data, bytes):
+                continue
+            try:
+                message = parse_frame(data)
+            except ProtocolError:
+                continue
+            if (
+                _is_response_message(message)
+                and (
+                    message.header.response_url is not None
+                    or message.header.correlation_data is not None
+                )
+            ):
+                self._retain_response(message)
+                retained += 1
         if drained:
-            _LOGGER.debug("Drained %d stale messages from WebSocket buffer", drained)
+            _LOGGER.debug(
+                "Drained %d stale WebSocket messages; retained %d routed responses",
+                drained,
+                retained,
+            )
 
     async def disconnect(self) -> None:
         """Disconnect from the vacuum and stop all tasks."""
@@ -577,9 +680,8 @@ class NarwalClient:
             _LOGGER.debug("Failed to parse frame: %s", e)
             return
 
-        # Field5 (0x2a) messages are command responses
-        if msg.field_tag == PROTOBUF_FIELD5_TAG:
-            _LOGGER.debug("Field5 response routed to queue: %s", msg.short_topic)
+        if _is_response_message(msg):
+            _LOGGER.debug("Command response routed to queue: %s", msg.short_topic)
             await self._response_queue.put(msg)
             return
 
@@ -947,6 +1049,72 @@ class NarwalClient:
 
     # --- Command infrastructure ---
 
+    def _retain_response(self, message: NarwalMessage) -> None:
+        """Retain a routed response which cannot match the active request."""
+        self._retained_responses.append(message)
+        _LOGGER.debug(
+            "Retained unmatched response: response_url=%r correlation_data=%r",
+            message.header.response_url,
+            message.header.correlation_data,
+        )
+
+    def _discard_pre_command_responses(self) -> None:
+        """Establish a temporal boundary before sending a new request.
+
+        Existing routed frames are retained for diagnostics. Unrouted legacy
+        field-5 frames are dropped, matching the historical stale-wake cleanup.
+        Neither kind can be a response to a command that has not been sent yet.
+        """
+        stale_legacy = 0
+        while not self._response_queue.empty():
+            try:
+                message = self._response_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if (
+                message.header.response_url is not None
+                or message.header.correlation_data is not None
+            ):
+                self._retain_response(message)
+            else:
+                stale_legacy += 1
+        if stale_legacy:
+            _LOGGER.debug(
+                "Discarded %d stale unrouted legacy responses", stale_legacy
+            )
+
+    async def _wait_for_queued_response(
+        self,
+        *,
+        expected_full_topic: str,
+        expected_short_topic: str,
+        timeout: float,
+    ) -> NarwalMessage:
+        """Wait for the active command while retaining interleaved responses."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                message = await asyncio.wait_for(
+                    self._response_queue.get(), timeout=remaining
+                )
+            except TimeoutError:
+                break
+            if _response_matches_topic(
+                message,
+                expected_full_topic=expected_full_topic,
+                expected_short_topic=expected_short_topic,
+            ):
+                return message
+            self._retain_response(message)
+
+        raise NarwalCommandError(
+            f"No matching response for command '{expected_short_topic}' "
+            f"within {timeout}s"
+        )
+
     async def send_command(
         self,
         short_topic: str,
@@ -974,16 +1142,7 @@ class NarwalClient:
             raise NarwalConnectionError("Not connected to vacuum")
 
         async with self._command_lock:
-            # Drain any stale responses (e.g. from fire-and-forget wake burst)
-            drained = 0
-            while not self._response_queue.empty():
-                try:
-                    self._response_queue.get_nowait()
-                    drained += 1
-                except asyncio.QueueEmpty:
-                    break
-            if drained:
-                _LOGGER.debug("Drained %d stale field5 responses", drained)
+            self._discard_pre_command_responses()
 
             full_topic = self._full_topic(short_topic)
             frame = build_frame(full_topic, payload)
@@ -992,17 +1151,18 @@ class NarwalClient:
 
             # If listener is running, wait on the queue (avoid concurrent recv)
             if self._listener_active:
-                try:
-                    msg = await asyncio.wait_for(
-                        self._response_queue.get(), timeout=timeout
-                    )
-                except asyncio.TimeoutError:
-                    raise NarwalCommandError(
-                        f"No response for command '{short_topic}' within {timeout}s"
-                    ) from None
+                msg = await self._wait_for_queued_response(
+                    expected_full_topic=full_topic,
+                    expected_short_topic=short_topic,
+                    timeout=timeout,
+                )
             else:
                 # No listener — read directly from websocket
-                msg = await self._wait_for_field5_response(timeout)
+                msg = await self._wait_for_field5_response(
+                    timeout,
+                    expected_full_topic=full_topic,
+                    expected_short_topic=short_topic,
+                )
 
         # Decode response
         try:
@@ -1013,24 +1173,25 @@ class NarwalClient:
         # Field 1 is a result code for action commands (int),
         # but data for some query commands (string/bytes/dict).
         # Room-clean returns field 1 as a dict (config echo), not an int.
-        raw_field1 = decoded.get("1", 0)
-        try:
-            result_code = int(raw_field1)
-        except (ValueError, TypeError):
-            result_code = CommandResult.SUCCESS  # non-int field 1 = data response = success
+        raw_field1 = decoded.get("1")
+        result_known = isinstance(raw_field1, int) and not isinstance(raw_field1, bool)
+        result_code = raw_field1 if result_known else 0
 
         return CommandResponse(
             result_code=result_code,
             data=decoded,
             raw_payload=msg.payload,
+            result_known=result_known,
         )
 
     async def _wait_for_field5_response(
-        self, timeout: float
+        self,
+        timeout: float,
+        *,
+        expected_full_topic: str | None = None,
+        expected_short_topic: str | None = None,
     ) -> NarwalMessage:
-        """Read from WebSocket until a field5 response arrives."""
-        import time
-
+        """Read until the matching response arrives, processing broadcasts."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
@@ -1051,8 +1212,19 @@ class NarwalClient:
             except ProtocolError:
                 continue
 
-            if msg.field_tag == PROTOBUF_FIELD5_TAG:
-                return msg
+            if _is_response_message(msg):
+                if (
+                    expected_full_topic is None
+                    or expected_short_topic is None
+                    or _response_matches_topic(
+                        msg,
+                        expected_full_topic=expected_full_topic,
+                        expected_short_topic=expected_short_topic,
+                    )
+                ):
+                    return msg
+                self._retain_response(msg)
+                continue
 
             # Process broadcast messages while waiting
             short_topic = msg.short_topic
@@ -1075,9 +1247,7 @@ class NarwalClient:
             elif short_topic in _AUX_STATUS_TOPICS:
                 self._update_from_aux_status_broadcast(short_topic, decoded)
 
-        raise NarwalCommandError(
-            f"No field5 response within {timeout}s"
-        )
+        raise NarwalCommandError(f"No matching response within {timeout}s")
 
     async def send_raw(
         self, topic: str, payload: bytes, header_byte: int | None = None
@@ -1531,6 +1701,37 @@ class NarwalClient:
             timeout=10.0,
         )
 
+    async def start_rooms_compat(
+        self,
+        room_ids: list[int],
+    ) -> CommandResponse:
+        """Use the pre-parity room-clean path retained for unvalidated models.
+
+        This is the behavior shipped on master before the parameterized
+        ``clean/start_clean`` implementation: try the observed nested-room
+        ``clean/plan/start`` payload, then its legacy flat-room fallback.
+        """
+        if not room_ids:
+            return await self.start()
+
+        payload_v2 = self._build_clean_payload_v2(room_ids)
+        response = await self.send_command(
+            TOPIC_CMD_PLAN_START,
+            payload=payload_v2,
+            timeout=10.0,
+        )
+        if response.result_code != CommandResult.NOT_APPLICABLE:
+            return response
+
+        _LOGGER.info(
+            "start_rooms_compat: nested payload rejected; retrying legacy schema"
+        )
+        return await self.send_command(
+            TOPIC_CMD_PLAN_START,
+            payload=self._build_room_clean_payload(room_ids),
+            timeout=10.0,
+        )
+
     async def start_easy_clean(self) -> CommandResponse:
         """Start quick/easy clean."""
         return await self.send_command(TOPIC_CMD_EASY_CLEAN)
@@ -1653,6 +1854,7 @@ class NarwalClient:
             firmware_version=_clean_bytes(data.get("3", "")),
         )
         self.state.device_info = info
+        self.state.firmware_version = info.firmware_version
 
         # Update topic prefix to match this device's product key
         if info.product_key:
@@ -1661,10 +1863,30 @@ class NarwalClient:
 
         return info
 
-    async def get_feature_list(self) -> dict[int, int]:
-        """Query supported features. Returns {feature_id: value}."""
+    async def get_feature_list(self) -> CapabilityMap:
+        """Query and cache the device-advertised capability fields."""
         resp = await self.send_command(TOPIC_CMD_GET_FEATURE_LIST)
-        return {int(k): int(v) for k, v in resp.data.items()}
+        capabilities = normalize_feature_response(resp.data)
+        self.state.capabilities = capabilities
+        self.state.capabilities_fetched = True
+        _LOGGER.info(
+            "Device advertised %d Narwal capability fields",
+            len(capabilities),
+        )
+        return capabilities
+
+    async def get_config(self) -> ConfigSnapshot:
+        """Query and cache a read-only configuration snapshot."""
+        resp = await self.send_command(TOPIC_CMD_GET_CONFIG)
+        snapshot = decode_get_config_response(resp.data)
+        self.state.config_snapshot = snapshot
+        _LOGGER.debug(
+            "%s config/get returned %d typed and %d raw fields",
+            self.host,
+            len(snapshot.values),
+            len(snapshot.raw_fields),
+        )
+        return snapshot
 
     async def get_status(self, full_update: bool = True) -> CommandResponse:
         """Query current device base status.
@@ -1707,9 +1929,19 @@ class NarwalClient:
             _LOGGER.debug("get_status response has no field 2; keys: %s", list(resp.data.keys()))
         return resp
 
-    async def get_current_task(self) -> CommandResponse:
-        """Query the current clean task."""
-        return await self.send_command(TOPIC_CMD_GET_CURRENT_TASK)
+    async def get_current_task(self) -> CurrentCleanTask:
+        """Query and cache the current clean task without inferring activity."""
+        resp = await self.send_command(TOPIC_CMD_GET_CURRENT_TASK)
+        task = decode_current_task_response(resp.data)
+        self.state.current_clean_task = task
+        _LOGGER.debug(
+            "%s current clean task: map=%r type=%r items=%d",
+            self.host,
+            task.map_id,
+            task.task_type,
+            len(task.items),
+        )
+        return task
 
     async def get_clean_progress_info(self) -> CommandResponse:
         """Query active clean progress information."""

@@ -18,6 +18,17 @@
       "already_configured": "Cet aspirateur est déjà configuré."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Contrôles Narwal avancés",
+        "description": "Cette option expose uniquement le service supervisé de validation du nettoyage paramétré AX15 sur le micrologiciel sondé. Chaque appel exige aussi une confirmation. Elle n'active aucune écriture de station, configuration, carte, caméra, pompe ou micrologiciel.",
+        "data": {
+          "enable_experimental_cleaning": "Activer le nettoyage paramétré expérimental pour ce modèle et ce micrologiciel"
+        }
+      }
+    }
+  },
   "entity": {
     "vacuum": {
       "vacuum": {
@@ -52,6 +63,18 @@
       },
       "firmware_version": {
         "name": "Version du firmware"
+      },
+      "capabilities": {
+        "name": "Fonctionnalités annoncées"
+      },
+      "config_snapshot": {
+        "name": "Instantané de configuration"
+      },
+      "current_clean_task": {
+        "name": "Tâche de nettoyage actuelle"
+      },
+      "protocol_profile": {
+        "name": "Profil du protocole"
       },
       "charging_state": {
         "name": "Charge",

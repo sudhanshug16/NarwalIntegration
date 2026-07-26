@@ -13,7 +13,12 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client import CommandResponse, CommandResult
+from .narwal_client import (
+    Capability,
+    CommandResponse,
+    CommandResult,
+    capability_enabled,
+)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -22,6 +27,7 @@ class NarwalButtonEntityDescription(ButtonEntityDescription):
 
     action: str
     icon: str
+    required_feature: Capability | None = None
 
 
 BUTTON_DESCRIPTIONS: tuple[NarwalButtonEntityDescription, ...] = (
@@ -48,18 +54,21 @@ BUTTON_DESCRIPTIONS: tuple[NarwalButtonEntityDescription, ...] = (
         translation_key="wash_and_dry_mop",
         action="wash_and_dry_mop",
         icon="mdi:creation",
+        entity_registry_enabled_default=False,
     ),
     NarwalButtonEntityDescription(
         key="dry_dust_bin",
         translation_key="dry_dust_bin",
         action="dry_dust_bag",
         icon="mdi:air-filter",
+        required_feature=Capability.TEMP_HUMIDITY_DETECTION_FOR_DRY_DUST_BAG,
     ),
     NarwalButtonEntityDescription(
         key="dry_dock_bag",
         translation_key="dry_dock_bag",
         action="dry_station_bag",
         icon="mdi:shield-sun-outline",
+        required_feature=Capability.DRY_STATION_BAG,
     ),
 )
 
@@ -71,9 +80,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal button entities."""
     coordinator = entry.runtime_data
+    capabilities = coordinator.client.state.capabilities
+    allowed_actions = coordinator.device_profile.station_actions
     async_add_entities(
         NarwalActionButton(coordinator, description)
         for description in BUTTON_DESCRIPTIONS
+        if description.action in allowed_actions
+        if description.required_feature is None
+        or capability_enabled(capabilities, description.required_feature)
     )
 
 
@@ -99,8 +113,20 @@ class NarwalActionButton(NarwalEntity, ButtonEntity):
         """Return True when the robot is docked and can run station actions."""
         if not super().available:
             return False
+        if self.entity_description.action not in (
+            self.coordinator.device_profile.station_actions
+        ):
+            return False
         state = self.coordinator.data
-        return state is None or state.is_docked
+        if state is None:
+            return False
+        feature = self.entity_description.required_feature
+        if (
+            feature is not None
+            and not capability_enabled(state.capabilities, feature)
+        ):
+            return False
+        return state.is_docked
 
     async def async_press(self) -> None:
         """Run the Narwal station action."""
@@ -116,9 +142,18 @@ class NarwalActionButton(NarwalEntity, ButtonEntity):
         if (
             self.entity_description.action == "wash_mop"
             and response.not_applicable
+            and capability_enabled(
+                client.state.capabilities,
+                Capability.WASH_MOP_BY_ROBOT_STATUS,
+            )
         ):
             response = await client.wash_mop_by_robot_status()
-        if not response.success and response.result_code != 0:
+        if not response.result_known:
+            raise HomeAssistantError(
+                "Narwal response contained no action result code; "
+                "physical state is unconfirmed"
+            )
+        if not response.success:
             try:
                 result_name = CommandResult(response.result_code).name
             except ValueError:
