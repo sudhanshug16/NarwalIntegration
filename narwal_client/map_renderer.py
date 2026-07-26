@@ -36,7 +36,7 @@ ROOM_COLORS: list[tuple[int, int, int]] = [
     (216, 191, 216),  # 12 - thistle
     (250, 250, 210),  # 13 - light goldenrod
     (173, 216, 230),  # 14 - light blue
-    (244, 164, 96),   # 15 - sandy brown
+    (244, 164, 96),  # 15 - sandy brown
     (245, 222, 179),  # 16 - wheat
     (127, 255, 212),  # 17 - aquamarine
     (255, 160, 122),  # 18 - light salmon
@@ -49,59 +49,65 @@ ROOM_COLORS: list[tuple[int, int, int]] = [
 # Obstacle/furniture annotation colors by catalog from APK map_furniture.json
 OBSTACLE_COLORS: dict[int, tuple[int, int, int]] = {
     # Beds (1-3)
-    1: (180, 140, 100),    # single bed - tan
-    2: (180, 140, 100),    # double bed - tan
-    3: (180, 140, 100),    # baby bed - tan
+    1: (180, 140, 100),  # single bed - tan
+    2: (180, 140, 100),  # double bed - tan
+    3: (180, 140, 100),  # baby bed - tan
     # Tables (4-7, 31)
-    4: (160, 130, 90),     # dining table - brown
-    5: (160, 130, 90),     # round table - brown
-    6: (160, 130, 90),     # tea table - brown
-    7: (160, 130, 90),     # round tea table - brown
-    31: (160, 130, 90),    # desk - brown
+    4: (160, 130, 90),  # dining table - brown
+    5: (160, 130, 90),  # round table - brown
+    6: (160, 130, 90),  # tea table - brown
+    7: (160, 130, 90),  # round tea table - brown
+    31: (160, 130, 90),  # desk - brown
     # Cupboards/storage (8-12)
-    8: (140, 120, 100),    # TV stand - dark tan
-    9: (140, 120, 100),    # bedside table - dark tan
-    10: (140, 120, 100),   # locker - dark tan
-    11: (140, 120, 100),   # wardrobe - dark tan
-    12: (140, 120, 100),   # shoe cabinet - dark tan
+    8: (140, 120, 100),  # TV stand - dark tan
+    9: (140, 120, 100),  # bedside table - dark tan
+    10: (140, 120, 100),  # locker - dark tan
+    11: (140, 120, 100),  # wardrobe - dark tan
+    12: (140, 120, 100),  # shoe cabinet - dark tan
     # Sofas/chairs (13-18, 30)
-    13: (100, 160, 130),   # armchair - sage
-    14: (100, 160, 130),   # sofa - sage
-    15: (100, 160, 130),   # L-shaped sofa - sage
-    16: (100, 160, 130),   # lazy chair - sage
-    17: (100, 160, 130),   # chair - sage
-    18: (100, 160, 130),   # bar chair - sage
-    30: (100, 160, 130),   # U-shaped sofa - sage
+    13: (100, 160, 130),  # armchair - sage
+    14: (100, 160, 130),  # sofa - sage
+    15: (100, 160, 130),  # L-shaped sofa - sage
+    16: (100, 160, 130),  # lazy chair - sage
+    17: (100, 160, 130),  # chair - sage
+    18: (100, 160, 130),  # bar chair - sage
+    30: (100, 160, 130),  # U-shaped sofa - sage
     # Pets (19-21, 75-76)
-    19: (200, 160, 120),   # cat toilet - peach
-    20: (200, 160, 120),   # pet feeder - peach
-    21: (200, 160, 120),   # pet house - peach
-    75: (200, 160, 120),   # cat house - peach
-    76: (200, 160, 120),   # dog house - peach
+    19: (200, 160, 120),  # cat toilet - peach
+    20: (200, 160, 120),  # pet feeder - peach
+    21: (200, 160, 120),  # pet house - peach
+    75: (200, 160, 120),  # cat house - peach
+    76: (200, 160, 120),  # dog house - peach
     # Appliances (22-25, 34)
-    22: (150, 180, 200),   # washing machine - steel blue
-    23: (150, 180, 200),   # refrigerator - steel blue
-    24: (150, 180, 200),   # air conditioner - steel blue
-    25: (150, 180, 200),   # fan - steel blue
-    34: (150, 180, 200),   # stove - steel blue
+    22: (150, 180, 200),  # washing machine - steel blue
+    23: (150, 180, 200),  # refrigerator - steel blue
+    24: (150, 180, 200),  # air conditioner - steel blue
+    25: (150, 180, 200),  # fan - steel blue
+    34: (150, 180, 200),  # stove - steel blue
     # Bathroom (28, 33)
-    28: (120, 180, 220),   # toilet - light blue
-    33: (120, 180, 220),   # washbasin - light blue
+    28: (120, 180, 220),  # toilet - light blue
+    33: (120, 180, 220),  # washbasin - light blue
     # Misc (26-27, 29, 32, 77-78)
-    26: (100, 180, 100),   # potted plant - green
-    27: (200, 200, 220),   # floor mirror - silver
-    29: (80, 80, 80),      # piano - dark gray
-    32: (80, 80, 80),      # grand piano - dark gray
-    77: (200, 200, 200),   # round placeholder - gray
-    78: (200, 200, 200),   # weighing scale - gray
+    26: (100, 180, 100),  # potted plant - green
+    27: (200, 200, 220),  # floor mirror - silver
+    29: (80, 80, 80),  # piano - dark gray
+    32: (80, 80, 80),  # grand piano - dark gray
+    77: (200, 200, 200),  # round placeholder - gray
+    78: (200, 200, 200),  # weighing scale - gray
 }
 OBSTACLE_COLOR_DEFAULT = (200, 200, 200)
 
 # Special pixel colors
-COLOR_UNKNOWN = (40, 40, 40)         # outside map / unmapped
+COLOR_UNKNOWN = (40, 40, 40)  # outside map / unmapped
 COLOR_UNASSIGNED_FLOOR = (200, 200, 200)  # floor not assigned to a room
 COLOR_UNASSIGNED_OBSTACLE = (80, 80, 80)  # obstacle not in a room
-COLOR_FALLBACK = (180, 180, 180)     # unknown room ID
+COLOR_FALLBACK = (180, 180, 180)  # unknown room ID
+
+# Render the low-resolution robot grid onto a display-sized canvas.  The live
+# AX15 map is only 207x223 pixels, so returning it at native size makes Home
+# Assistant enlarge the completed bitmap (including labels and icons).
+DEFAULT_RENDER_SCALE = 4
+MAX_RENDER_SCALE = 8
 
 
 def decompress_map(compressed: bytes) -> bytes:
@@ -134,9 +140,7 @@ def decompress_map(compressed: bytes) -> bytes:
     except zlib.error:
         pass
 
-    _LOGGER.warning(
-        "Could not decompress map data (%d bytes), using raw", len(compressed)
-    )
+    _LOGGER.warning("Could not decompress map data (%d bytes), using raw", len(compressed))
     return compressed
 
 
@@ -231,11 +235,47 @@ def _darken(color: tuple[int, int, int], amount: int = 80) -> tuple[int, int, in
     )
 
 
+def _normalize_render_scale(scale: int) -> int:
+    """Clamp the requested render scale to a safe, useful range."""
+    try:
+        value = int(scale)
+    except (TypeError, ValueError):
+        return DEFAULT_RENDER_SCALE
+    return max(1, min(value, MAX_RENDER_SCALE))
+
+
+def _load_font(
+    image_font: object,
+    size: int,
+    *,
+    bold: bool = False,
+) -> object:
+    """Load a scalable font bundled with Pillow, with portable fallbacks."""
+    candidates = (
+        ("DejaVuSans-Bold.ttf", "Arial Bold.ttf", "arialbd.ttf")
+        if bold
+        else ("DejaVuSans.ttf", "Arial.ttf", "arial.ttf")
+    )
+    for candidate in candidates:
+        try:
+            return image_font.truetype(candidate, size)  # type: ignore[attr-defined]
+        except OSError:
+            continue
+
+    # Pillow 10.1+ can scale its bundled default font. Older versions still
+    # return a usable bitmap font, so keep that as the final fallback.
+    try:
+        return image_font.load_default(size=size)  # type: ignore[attr-defined]
+    except TypeError:
+        return image_font.load_default()  # type: ignore[attr-defined]
+
+
 def _draw_dock(
     draw: "ImageDraw.ImageDraw",
     dock_x: int,
     dock_y: int,
     size: int = 6,
+    outline_width: int = 1,
 ) -> None:
     """Draw a dock/charging station icon at the given grid coordinates.
 
@@ -246,6 +286,7 @@ def _draw_dock(
         [dock_x - radius, dock_y - radius, dock_x + radius, dock_y + radius],
         fill=(255, 255, 255),
         outline=(180, 180, 180),
+        width=outline_width,
     )
 
 
@@ -255,6 +296,8 @@ def _draw_robot(
     ry: int,
     heading: float | None,
     radius: int,
+    outline_width: int = 1,
+    heading_width: int = 2,
 ) -> None:
     """Draw robot position with optional heading arrow.
 
@@ -273,6 +316,7 @@ def _draw_robot(
         [rx - radius, ry - radius, rx + radius, ry + radius],
         fill=(0, 120, 255),
         outline=(255, 255, 255),
+        width=outline_width,
     )
 
     # Heading arrow — white line from center in heading direction
@@ -286,7 +330,7 @@ def _draw_robot(
         draw.line(
             [(rx, ry), (rx + dx, ry + dy)],
             fill=(255, 255, 255),
-            width=2,
+            width=heading_width,
         )
 
 
@@ -340,7 +384,10 @@ def render_map_png(
     if len(pixels) < expected:
         _LOGGER.warning(
             "Map has %d pixels, expected %d (%dx%d) — padding",
-            len(pixels), expected, width, height,
+            len(pixels),
+            expected,
+            width,
+            height,
         )
         pixels.extend([0] * (expected - len(pixels)))
     elif len(pixels) > expected:
@@ -441,6 +488,7 @@ def render_base_map(
     obstacles: "list | None" = None,
     origin_x: int = 0,
     origin_y: int = 0,
+    render_scale: int = DEFAULT_RENDER_SCALE,
 ) -> "Image.Image | None":
     """Render the static floor plan as a PIL Image (no robot overlay).
 
@@ -451,6 +499,7 @@ def render_base_map(
         obstacles: List of ObstacleInfo objects to render (optional).
         origin_x: Map origin X offset for obstacle coordinate transform.
         origin_y: Map origin Y offset for obstacle coordinate transform.
+        render_scale: Output pixels per robot grid cell.
     """
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -462,6 +511,7 @@ def render_base_map(
     if not decompressed or width <= 0 or height <= 0:
         return None
 
+    scale = _normalize_render_scale(render_scale)
     pixels = _decode_packed_varints(decompressed)
     expected = width * height
 
@@ -507,46 +557,54 @@ def render_base_map(
                 room_count[room_id] = room_count.get(room_id, 0) + 1
 
     img = img.transpose(Image.FLIP_TOP_BOTTOM)
+    if scale > 1:
+        resampling = getattr(Image, "Resampling", Image)
+        img = img.resize(
+            (width * scale, height * scale),
+            resample=resampling.NEAREST,
+        )
     draw = ImageDraw.Draw(img)
 
     if room_names:
-        try:
-            font = ImageFont.truetype("arial.ttf", 10)
-        except (IOError, OSError):
-            font = ImageFont.load_default()
+        font = _load_font(ImageFont, max(10, 8 * scale), bold=True)
+        label_stroke = max(1, scale // 2)
         for rid, name in room_names.items():
             if not name or rid not in room_count:
                 continue
-            cx = room_sum_x[rid] // room_count[rid]
-            cy = height - 1 - (room_sum_y[rid] // room_count[rid])
+            cx = (room_sum_x[rid] // room_count[rid]) * scale
+            cy = (height - 1 - (room_sum_y[rid] // room_count[rid])) * scale
             bbox = font.getbbox(name)
             tw = bbox[2] - bbox[0]
             th = bbox[3] - bbox[1]
             tx = cx - tw // 2
             ty = cy - th // 2
-            for ox, oy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                draw.text((tx + ox, ty + oy), name, fill=(0, 0, 0), font=font)
-            draw.text((tx, ty), name, fill=(255, 255, 255), font=font)
+            draw.text(
+                (tx, ty),
+                name,
+                fill=(255, 255, 255),
+                font=font,
+                stroke_width=label_stroke,
+                stroke_fill=(0, 0, 0),
+            )
 
     # Draw obstacle/furniture annotations (static data from get_map field 2.32)
     if obstacles:
-        try:
-            obs_font = ImageFont.truetype("arial.ttf", 8)
-        except (IOError, OSError):
-            obs_font = ImageFont.load_default()
+        obs_font = _load_font(ImageFont, max(8, 7 * scale))
+        obstacle_stroke = max(1, scale // 2)
         for obs in obstacles:
             gx, gy = obs.to_grid_coords(origin_x, origin_y)
             # Skip out-of-bounds obstacles
             if gx < 0 or gx >= width or gy < 0 or gy >= height:
                 continue
-            img_x = int(gx)
-            img_y = height - 1 - int(gy)
-            half_w = max(1, int(obs.width / 2))
-            half_h = max(1, int(obs.height / 2))
+            img_x = int(round(gx * scale))
+            img_y = int(round((height - 1 - gy) * scale))
+            half_w = max(scale, int(round(obs.width * scale / 2)))
+            half_h = max(scale, int(round(obs.height * scale / 2)))
             color = OBSTACLE_COLORS.get(obs.type_id, OBSTACLE_COLOR_DEFAULT)
             draw.rectangle(
                 [img_x - half_w, img_y - half_h, img_x + half_w, img_y + half_h],
-                outline=color, width=1,
+                outline=color,
+                width=max(1, scale),
             )
             # Draw label centered above the rectangle
             label = obs.display_name
@@ -555,14 +613,24 @@ def render_base_map(
             th = bbox[3] - bbox[1]
             lx = img_x - tw // 2
             ly = img_y - half_h - th - 2
-            # Dark outline for readability
-            for ox, oy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                draw.text((lx + ox, ly + oy), label, fill=(0, 0, 0), font=obs_font)
-            draw.text((lx, ly), label, fill=color, font=obs_font)
+            draw.text(
+                (lx, ly),
+                label,
+                fill=color,
+                font=obs_font,
+                stroke_width=obstacle_stroke,
+                stroke_fill=(0, 0, 0),
+            )
 
     if dock_x is not None and dock_y is not None:
-        dock_size = max(4, min(width, height) // 60)
-        _draw_dock(draw, int(dock_x), height - 1 - int(dock_y), dock_size)
+        dock_size = max(4 * scale, min(img.width, img.height) // 60)
+        _draw_dock(
+            draw,
+            int(round(dock_x * scale)),
+            int(round((height - 1 - dock_y) * scale)),
+            dock_size,
+            outline_width=max(1, scale // 2),
+        )
 
     return img
 
@@ -593,6 +661,7 @@ def render_overlay(
     img = base_img.copy()
     draw = ImageDraw.Draw(img)
     width = img.width
+    scale = max(1, round(base_img.height / height)) if height > 0 else 1
 
     # Draw trail (blue path showing where robot has cleaned)
     if trail and len(trail) >= 2:
@@ -602,17 +671,31 @@ def render_overlay(
                 color = (30, 120, 255)  # bright blue for recent
             else:
                 color = (15, 60, 130)  # dim blue for older
-            x1, y1 = int(trail[i][0]), height - 1 - int(trail[i][1])
-            x2, y2 = int(trail[i + 1][0]), height - 1 - int(trail[i + 1][1])
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=2)
+            x1 = int(round(trail[i][0] * scale))
+            y1 = int(round((height - 1 - trail[i][1]) * scale))
+            x2 = int(round(trail[i + 1][0] * scale))
+            y2 = int(round((height - 1 - trail[i + 1][1]) * scale))
+            draw.line(
+                [(x1, y1), (x2, y2)],
+                fill=color,
+                width=max(2, 2 * scale),
+            )
 
     # Draw robot
     if robot_x is not None and robot_y is not None:
-        rx = int(robot_x)
-        ry = height - 1 - int(robot_y)
-        if 0 <= rx < width and 0 <= ry < height:
-            radius = max(3, min(width, height) // 80)
-            _draw_robot(draw, rx, ry, robot_heading, radius)
+        rx = int(round(robot_x * scale))
+        ry = int(round((height - 1 - robot_y) * scale))
+        if 0 <= rx < width and 0 <= ry < img.height:
+            radius = max(3 * scale, min(img.width, img.height) // 80)
+            _draw_robot(
+                draw,
+                rx,
+                ry,
+                robot_heading,
+                radius,
+                outline_width=max(1, scale // 2),
+                heading_width=max(2, scale),
+            )
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -648,6 +731,13 @@ def render_map_from_compressed(
     """
     decompressed = decompress_map(compressed)
     return render_map_png(
-        decompressed, width, height, robot_x, robot_y, robot_heading,
-        dock_x, dock_y, room_names,
+        decompressed,
+        width,
+        height,
+        robot_x,
+        robot_y,
+        robot_heading,
+        dock_x,
+        dock_y,
+        room_names,
     )

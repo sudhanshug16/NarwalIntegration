@@ -12,12 +12,13 @@ import io
 import zlib
 
 from narwal_client.map_renderer import (
+    DEFAULT_RENDER_SCALE,
+    OBSTACLE_COLOR_DEFAULT,
+    OBSTACLE_COLORS,
+    _decode_packed_varints,
+    decompress_map,
     render_base_map,
     render_overlay,
-    decompress_map,
-    _decode_packed_varints,
-    OBSTACLE_COLORS,
-    OBSTACLE_COLOR_DEFAULT,
 )
 from narwal_client.models import ObstacleInfo
 
@@ -71,12 +72,32 @@ class TestRenderBaseMap:
         compressed = _make_room_grid(width, height, room_id=1)
 
         result = render_base_map(
-            compressed, width, height,
+            compressed,
+            width,
+            height,
             room_names={1: "Kitchen"},
         )
 
         assert result is not None
         assert isinstance(result, Image.Image)
+        assert result.size == (
+            width * DEFAULT_RENDER_SCALE,
+            height * DEFAULT_RENDER_SCALE,
+        )
+
+    def test_native_scale_can_be_requested(self) -> None:
+        """Callers can still request a native-resolution map when needed."""
+        width, height = 20, 30
+        compressed = _make_room_grid(width, height, room_id=1)
+
+        result = render_base_map(
+            compressed,
+            width,
+            height,
+            render_scale=1,
+        )
+
+        assert result is not None
         assert result.size == (width, height)
 
     def test_with_dock_position(self) -> None:
@@ -87,19 +108,23 @@ class TestRenderBaseMap:
         compressed = _make_room_grid(width, height, room_id=2)
 
         result = render_base_map(
-            compressed, width, height,
-            dock_x=15.0, dock_y=15.0,
+            compressed,
+            width,
+            height,
+            dock_x=15.0,
+            dock_y=15.0,
         )
 
         assert result is not None
         assert isinstance(result, Image.Image)
         # The dock is drawn as a white circle — check that the center pixel
         # at the dock position (Y-flipped) is white or near-white
-        dock_px_y = height - 1 - 15  # Y-flip
-        r, g, b = result.getpixel((15, dock_px_y))
-        assert r > 200 and g > 200 and b > 200, (
-            f"Expected white-ish dock pixel, got ({r}, {g}, {b})"
-        )
+        dock_px_x = 15 * DEFAULT_RENDER_SCALE
+        dock_px_y = (height - 1 - 15) * DEFAULT_RENDER_SCALE
+        r, g, b = result.getpixel((dock_px_x, dock_px_y))
+        assert (
+            r > 200 and g > 200 and b > 200
+        ), f"Expected white-ish dock pixel, got ({r}, {g}, {b})"
 
     def test_empty_compressed_data(self) -> None:
         """Given empty compressed data, returns None gracefully."""
@@ -130,14 +155,17 @@ class TestRenderOverlay:
     def _make_base_image(self, width: int = 30, height: int = 30):
         """Create a simple base PIL Image for overlay tests."""
         from PIL import Image
+
         return Image.new("RGB", (width, height), (100, 100, 100))
 
     def test_returns_png_bytes(self) -> None:
         """render_overlay returns valid PNG bytes."""
         base = self._make_base_image()
         result = render_overlay(
-            base, height=30,
-            robot_x=15.0, robot_y=15.0,
+            base,
+            height=30,
+            robot_x=15.0,
+            robot_y=15.0,
             robot_heading=90.0,
         )
 
@@ -152,8 +180,10 @@ class TestRenderOverlay:
         trail = [(10.0, 10.0), (20.0, 20.0), (30.0, 30.0)]
 
         result = render_overlay(
-            base, height=50,
-            robot_x=30.0, robot_y=30.0,
+            base,
+            height=50,
+            robot_x=30.0,
+            robot_y=30.0,
             trail=trail,
         )
 
@@ -171,13 +201,16 @@ class TestRenderOverlay:
     def test_does_not_modify_base(self) -> None:
         """render_overlay does not mutate the base image."""
         from PIL import Image
+
         base = self._make_base_image()
         # Save original pixel for comparison
         original_pixel = base.getpixel((15, 15))
 
         render_overlay(
-            base, height=30,
-            robot_x=15.0, robot_y=15.0,
+            base,
+            height=30,
+            robot_x=15.0,
+            robot_y=15.0,
         )
 
         assert base.getpixel((15, 15)) == original_pixel
@@ -188,16 +221,21 @@ class TestRenderOverlay:
         compressed = _make_room_grid(width, height, room_id=1)
 
         base = render_base_map(
-            compressed, width, height,
-            dock_x=20.0, dock_y=20.0,
+            compressed,
+            width,
+            height,
+            dock_x=20.0,
+            dock_y=20.0,
             room_names={1: "Living Room"},
         )
         assert base is not None
 
         trail = [(18.0, 18.0), (22.0, 22.0), (25.0, 20.0)]
         png = render_overlay(
-            base, height=height,
-            robot_x=25.0, robot_y=20.0,
+            base,
+            height=height,
+            robot_x=25.0,
+            robot_y=20.0,
             robot_heading=45.0,
             trail=trail,
         )
@@ -206,8 +244,36 @@ class TestRenderOverlay:
         assert png[:8] == b"\x89PNG\r\n\x1a\n"
         # Verify we can open the PNG
         from PIL import Image
+
         img = Image.open(io.BytesIO(png))
-        assert img.size == (width, height)
+        assert img.size == (
+            width * DEFAULT_RENDER_SCALE,
+            height * DEFAULT_RENDER_SCALE,
+        )
+
+    def test_scaled_overlay_uses_scaled_robot_coordinates(self) -> None:
+        """The robot remains aligned with its source grid cell on an HD map."""
+        from PIL import Image
+
+        width, height = 30, 30
+        compressed = _make_room_grid(width, height, room_id=1)
+        base = render_base_map(compressed, width, height)
+        assert base is not None
+
+        robot_x, robot_y = 12.0, 18.0
+        png = render_overlay(
+            base,
+            height=height,
+            robot_x=robot_x,
+            robot_y=robot_y,
+        )
+        img = Image.open(io.BytesIO(png))
+        robot_px = (
+            int(robot_x * DEFAULT_RENDER_SCALE),
+            int((height - 1 - robot_y) * DEFAULT_RENDER_SCALE),
+        )
+
+        assert img.getpixel(robot_px) == (0, 120, 255)
 
 
 class TestObstacleRendering:
@@ -224,17 +290,24 @@ class TestObstacleRendering:
         ]
         # origin (0,0) so grid coords = center coords
         result = render_base_map(
-            compressed, width, height,
-            obstacles=obstacles, origin_x=0, origin_y=0,
+            compressed,
+            width,
+            height,
+            obstacles=obstacles,
+            origin_x=0,
+            origin_y=0,
         )
         assert result is not None
         assert isinstance(result, Image.Image)
-        assert result.size == (width, height)
+        assert result.size == (
+            width * DEFAULT_RENDER_SCALE,
+            height * DEFAULT_RENDER_SCALE,
+        )
 
     def test_obstacle_type_colors_exist(self) -> None:
         """OBSTACLE_COLORS dict has entries for all furniture enum types."""
-        assert 2 in OBSTACLE_COLORS   # double bed
-        assert 4 in OBSTACLE_COLORS   # dining table
+        assert 2 in OBSTACLE_COLORS  # double bed
+        assert 4 in OBSTACLE_COLORS  # dining table
         assert 14 in OBSTACLE_COLORS  # sofa
         assert 28 in OBSTACLE_COLORS  # toilet
         assert 33 in OBSTACLE_COLORS  # washbasin
@@ -243,9 +316,9 @@ class TestObstacleRendering:
 
     def test_obstacle_colors_are_distinct(self) -> None:
         """Different obstacle categories have distinct colors."""
-        assert OBSTACLE_COLORS[2] != OBSTACLE_COLORS[14]   # bed != sofa
+        assert OBSTACLE_COLORS[2] != OBSTACLE_COLORS[14]  # bed != sofa
         assert OBSTACLE_COLORS[14] != OBSTACLE_COLORS[28]  # sofa != toilet
-        assert OBSTACLE_COLORS[28] != OBSTACLE_COLORS[2]   # toilet != bed
+        assert OBSTACLE_COLORS[28] != OBSTACLE_COLORS[2]  # toilet != bed
 
     def test_empty_obstacles_same_as_no_obstacles(self) -> None:
         """render_base_map with empty obstacles list produces same output as without."""
@@ -274,8 +347,12 @@ class TestObstacleRendering:
         ]
 
         result = render_base_map(
-            compressed, width, height,
-            obstacles=obstacles, origin_x=0, origin_y=0,
+            compressed,
+            width,
+            height,
+            obstacles=obstacles,
+            origin_x=0,
+            origin_y=0,
         )
         assert result is not None
         assert isinstance(result, Image.Image)
@@ -289,14 +366,17 @@ class TestObstacleRendering:
 
         result_without = render_base_map(compressed, width, height)
         result_with = render_base_map(
-            compressed, width, height,
-            obstacles=[ObstacleInfo(id=1, type_id=2, center_x=20.0, center_y=20.0, width=10.0, height=10.0)],
-            origin_x=0, origin_y=0,
+            compressed,
+            width,
+            height,
+            obstacles=[
+                ObstacleInfo(id=1, type_id=2, center_x=20.0, center_y=20.0, width=10.0, height=10.0)
+            ],
+            origin_x=0,
+            origin_y=0,
         )
 
         assert result_without is not None
         assert result_with is not None
         # Images should differ (obstacle drawn on one but not other)
         assert list(result_without.getdata()) != list(result_with.getdata())
-
-
