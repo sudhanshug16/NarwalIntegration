@@ -11,16 +11,21 @@ from narwal_client.config import (
     GET_CONFIG_FIELD_TO_SET_CONFIG_FIELD,
     SET_CONFIG_FIELD_SPECS,
     AvoidMode,
+    CarpetCleanOption,
     CarpetCleanPriorityOption,
     CarpetDeepCleanOption,
     CleanMode,
+    CleanMopFrequency,
     ConfigCodecError,
     ConfigSnapshot,
     CornerCleanMode,
+    DryMopStrength,
     GetConfigField,
+    Language,
     SetConfigField,
     SetConfigPatch,
     StationLightCtrlType,
+    config_snapshot_attributes,
     decode_get_config_response,
     decode_set_config_patch,
     encode_set_config_patch,
@@ -28,23 +33,66 @@ from narwal_client.config import (
 
 PATCH_CASES = [
     (SetConfigField.VOLUME_PERCENTAGE, 100, bytes.fromhex("08 64")),
+    (SetConfigField.LANGUAGE, Language.ENGLISH, bytes.fromhex("10 03")),
     (SetConfigField.CHILD_LOCK_ENABLED, True, bytes.fromhex("40 01")),
     (SetConfigField.CLEAN_CARPET_ENABLED, False, bytes.fromhex("48 00")),
     (SetConfigField.SMART_CLEAN_DETECTION_ENABLED, True, bytes.fromhex("60 01")),
+    (
+        SetConfigField.DRY_MOP_STRENGTH,
+        DryMopStrength.SMART,
+        bytes.fromhex("68 03"),
+    ),
+    (
+        SetConfigField.CLEAN_MOP_FREQUENCY,
+        CleanMopFrequency.DEEP,
+        bytes.fromhex("70 03"),
+    ),
+    (
+        SetConfigField.CARPET_CLEAN_OPTION,
+        CarpetCleanOption.AVOID,
+        bytes.fromhex("78 04"),
+    ),
     (
         SetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN,
         False,
         bytes.fromhex("a0 01 00"),
     ),
+    (
+        SetConfigField.STATION_CLEAN_MODE,
+        CleanMode.MOP,
+        bytes.fromhex("a8 01 03"),
+    ),
     (SetConfigField.PET_MODE, True, bytes.fromhex("b0 01 01")),
     (SetConfigField.SMART_DEEP_CLEAN_ENABLED, False, bytes.fromhex("b8 01 00")),
+    (
+        SetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED,
+        True,
+        bytes.fromhex("d0 01 01"),
+    ),
     (SetConfigField.DUST_GATHERING_ENABLED, True, bytes.fromhex("d8 01 01")),
     (SetConfigField.SMART_DUST_GATHERING_ENABLED, False, bytes.fromhex("e0 01 00")),
     (SetConfigField.QUIET_DUST_GATHERING_ENABLED, True, bytes.fromhex("f0 01 01")),
+    (SetConfigField.DRY_ROBOT_BAG_ENABLED, False, bytes.fromhex("f8 01 00")),
     (SetConfigField.HOT_WATER_WASH_ENABLED, False, bytes.fromhex("80 02 00")),
     (SetConfigField.MASSIVE_DIRTY_DEEP_CLEAN_ENABLE, True, bytes.fromhex("88 02 01")),
     (SetConfigField.AVOID_MODE, AvoidMode.SAFER, bytes.fromhex("90 02 02")),
     (SetConfigField.ROBOT_CLEAN_MODE, CleanMode.COMPOSITE, bytes.fromhex("98 02 06")),
+    (SetConfigField.SPEECH_CONTROL_ENABLED, True, bytes.fromhex("a0 02 01")),
+    (
+        SetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING,
+        False,
+        bytes.fromhex("a8 02 00"),
+    ),
+    (
+        SetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED,
+        True,
+        bytes.fromhex("b8 02 01"),
+    ),
+    (
+        SetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED,
+        False,
+        bytes.fromhex("c0 02 00"),
+    ),
     (
         SetConfigField.CORNER_CLEAN_MODE,
         CornerCleanMode.ROTATE_ROBOT,
@@ -72,19 +120,30 @@ PATCH_CASES = [
 
 EXPECTED_SCHEMA = {
     1: "volumePercentage",
+    2: "language",
     8: "childLockEnabled",
     9: "cleanCarpetEnabled",
     12: "smartCleanDetectionEnabled",
+    13: "dryMopStrength",
+    14: "cleanMopFreq",
+    15: "carpetCleanOption",
     20: "switchBackToMainMapAfterTempMapClean",
+    21: "stationCleanMode",
     22: "petMode",
     23: "smartDeepCleanEnabled",
+    26: "moistureProofPadProtectEnabled",
     27: "dustGatheringEnabled",
     28: "smartDustGatheringEnabled",
     30: "quietDustGatheringEnabled",
+    31: "dryRobotBagEnabled",
     32: "hotWaterWashEnabled",
     33: "massiveDirtyDeepCleanEnable",
     34: "avoidMode",
     35: "robotCleanMode",
+    36: "speechControlEnabled",
+    37: "automaticPoweroffWhenDischarging",
+    39: "aiVoiceSoundEffectEnabled",
+    40: "aiVoiceSoundEffectForWaitingEnabled",
     41: "cornerCleanMode",
     45: "carpetCleanPriorityOption",
     46: "carpetDeepCleanOption",
@@ -95,6 +154,7 @@ EXPECTED_SCHEMA = {
 
 GET_CONFIG_CASES = [
     (GetConfigField.VOLUME_PERCENTAGE, SetConfigField.VOLUME_PERCENTAGE, 67, 67),
+    (GetConfigField.LANGUAGE, SetConfigField.LANGUAGE, 3, Language.ENGLISH),
     (GetConfigField.CHILD_LOCK_ENABLED, SetConfigField.CHILD_LOCK_ENABLED, 1, True),
     (GetConfigField.CLEAN_CARPET_ENABLED, SetConfigField.CLEAN_CARPET_ENABLED, 0, False),
     (
@@ -104,10 +164,34 @@ GET_CONFIG_CASES = [
         True,
     ),
     (
+        GetConfigField.DRY_MOP_STRENGTH,
+        SetConfigField.DRY_MOP_STRENGTH,
+        3,
+        DryMopStrength.SMART,
+    ),
+    (
+        GetConfigField.CLEAN_MOP_FREQUENCY,
+        SetConfigField.CLEAN_MOP_FREQUENCY,
+        2,
+        CleanMopFrequency.NORMAL,
+    ),
+    (
+        GetConfigField.CARPET_CLEAN_OPTION,
+        SetConfigField.CARPET_CLEAN_OPTION,
+        4,
+        CarpetCleanOption.AVOID,
+    ),
+    (
         GetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN,
         SetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN,
         0,
         False,
+    ),
+    (
+        GetConfigField.STATION_CLEAN_MODE,
+        SetConfigField.STATION_CLEAN_MODE,
+        3,
+        CleanMode.MOP,
     ),
     (GetConfigField.PET_MODE, SetConfigField.PET_MODE, 1, True),
     (
@@ -117,10 +201,22 @@ GET_CONFIG_CASES = [
         False,
     ),
     (
+        GetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED,
+        SetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED,
+        1,
+        True,
+    ),
+    (
         GetConfigField.DUST_GATHERING_ENABLED,
         SetConfigField.DUST_GATHERING_ENABLED,
         1,
         True,
+    ),
+    (
+        GetConfigField.DRY_ROBOT_BAG_ENABLED,
+        SetConfigField.DRY_ROBOT_BAG_ENABLED,
+        0,
+        False,
     ),
     (
         GetConfigField.SMART_DUST_GATHERING_ENABLED,
@@ -157,6 +253,30 @@ GET_CONFIG_CASES = [
         SetConfigField.ROBOT_CLEAN_MODE,
         6,
         CleanMode.COMPOSITE,
+    ),
+    (
+        GetConfigField.SPEECH_CONTROL_ENABLED,
+        SetConfigField.SPEECH_CONTROL_ENABLED,
+        1,
+        True,
+    ),
+    (
+        GetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING,
+        SetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING,
+        0,
+        False,
+    ),
+    (
+        GetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED,
+        SetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED,
+        1,
+        True,
+    ),
+    (
+        GetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED,
+        SetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED,
+        0,
+        False,
     ),
     (
         GetConfigField.CORNER_CLEAN_MODE,
@@ -198,19 +318,30 @@ GET_CONFIG_CASES = [
 
 EXPECTED_GET_TO_SET_SCHEMA = {
     1: 1,
+    2: 2,
     7: 8,
     8: 9,
     11: 12,
+    12: 13,
+    13: 14,
+    15: 15,
     20: 20,
+    21: 21,
     22: 22,
     23: 23,
+    26: 26,
     27: 27,
     28: 28,
     30: 30,
+    31: 31,
     32: 32,
     33: 33,
     34: 34,
     35: 35,
+    36: 36,
+    37: 37,
+    39: 39,
+    40: 40,
     41: 41,
     46: 45,
     47: 46,
@@ -273,6 +404,23 @@ def test_decode_accepts_other_bytes_like_inputs() -> None:
         (SetConfigField.CHILD_LOCK_ENABLED, "true", "requires bool"),
         (SetConfigField.AVOID_MODE, 1, "requires AvoidMode"),
         (SetConfigField.AVOID_MODE, CleanMode.SMART, "requires AvoidMode"),
+        (SetConfigField.LANGUAGE, 3, "requires Language"),
+        (
+            SetConfigField.DRY_MOP_STRENGTH,
+            CleanMopFrequency.NORMAL,
+            "requires DryMopStrength",
+        ),
+        (
+            SetConfigField.CLEAN_MOP_FREQUENCY,
+            DryMopStrength.STRONG,
+            "requires CleanMopFrequency",
+        ),
+        (
+            SetConfigField.CARPET_CLEAN_OPTION,
+            CleanMode.MOP,
+            "requires CarpetCleanOption",
+        ),
+        (SetConfigField.STATION_CLEAN_MODE, 3, "requires CleanMode"),
     ],
 )
 def test_patch_rejects_wrong_python_types(
@@ -293,6 +441,11 @@ def test_volume_rejects_values_outside_percentage_range(value: int) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        (SetConfigField.LANGUAGE, Language.UNSPECIFIED),
+        (SetConfigField.DRY_MOP_STRENGTH, DryMopStrength.UNSPECIFIED),
+        (SetConfigField.CLEAN_MOP_FREQUENCY, CleanMopFrequency.UNSPECIFIED),
+        (SetConfigField.CARPET_CLEAN_OPTION, CarpetCleanOption.UNSPECIFIED),
+        (SetConfigField.STATION_CLEAN_MODE, CleanMode.UNSPECIFIED),
         (SetConfigField.AVOID_MODE, AvoidMode.UNSPECIFIED),
         (SetConfigField.ROBOT_CLEAN_MODE, CleanMode.UNSPECIFIED),
         (SetConfigField.CORNER_CLEAN_MODE, CornerCleanMode.UNSPECIFIED),
@@ -333,6 +486,17 @@ def test_patch_is_immutable() -> None:
         (b"\x0a\x00", "wire type 2"),
         (b"\x38\x01", "unsupported SetConfig field 7"),
         (b"\x40\x02", "must be 0 or 1"),
+        (bytes.fromhex("10 10"), "unknown Language"),
+        (bytes.fromhex("10 00"), "between 1 and 15"),
+        (bytes.fromhex("68 04"), "unknown DryMopStrength"),
+        (bytes.fromhex("68 00"), "between 1 and 3"),
+        (bytes.fromhex("70 04"), "unknown CleanMopFrequency"),
+        (bytes.fromhex("70 00"), "between 1 and 3"),
+        (bytes.fromhex("78 05"), "unknown CarpetCleanOption"),
+        (bytes.fromhex("78 00"), "between 1 and 4"),
+        (bytes.fromhex("a8 01 07"), "unknown CleanMode"),
+        (bytes.fromhex("a8 01 00"), "between 1 and 6"),
+        (bytes.fromhex("d0 01 02"), "must be 0 or 1"),
         (bytes.fromhex("90 02 04"), "unknown AvoidMode"),
         (bytes.fromhex("90 02 00"), "between 1 and 3"),
         (bytes.fromhex("88 00 01"), "non-canonical"),
@@ -419,6 +583,7 @@ def test_decode_unwraps_response_field_two_and_separates_service_result() -> Non
 
     assert snapshot.values == {
         SetConfigField.VOLUME_PERCENTAGE: 55,
+        SetConfigField.LANGUAGE: Language.ENGLISH,
         SetConfigField.CHILD_LOCK_ENABLED: True,
         SetConfigField.AVOID_MODE: AvoidMode.SAFER,
     }
@@ -434,22 +599,74 @@ def test_nested_field_two_is_wrapper_even_with_scalar_service_result() -> None:
     assert snapshot.service_result == 6
 
 
-def test_direct_config_scalar_language_field_is_not_treated_as_wrapper() -> None:
+def test_direct_config_scalar_language_field_is_decoded_not_treated_as_wrapper() -> None:
     snapshot = decode_get_config_response({"1": 52, "2": 3, "7": 1})
 
     assert snapshot.values == {
         SetConfigField.VOLUME_PERCENTAGE: 52,
+        SetConfigField.LANGUAGE: Language.ENGLISH,
         SetConfigField.CHILD_LOCK_ENABLED: True,
     }
     assert snapshot.raw_fields == {1: 52, 2: 3, 7: 1}
     assert snapshot.service_result is None
 
 
+def test_new_config_fields_are_exposed_as_typed_attributes() -> None:
+    snapshot = decode_get_config_response(
+        {
+            "2": {
+                "2": 3,
+                "12": 3,
+                "13": 2,
+                "15": 4,
+                "21": 3,
+                "26": 1,
+                "31": 0,
+                "36": 1,
+                "37": 0,
+                "39": 1,
+                "40": 0,
+            }
+        }
+    )
+
+    attributes = config_snapshot_attributes(snapshot)
+
+    assert attributes["typed_values"] == {
+        "language": 3,
+        "dryMopStrength": 3,
+        "cleanMopFreq": 2,
+        "carpetCleanOption": 4,
+        "stationCleanMode": 3,
+        "moistureProofPadProtectEnabled": True,
+        "dryRobotBagEnabled": False,
+        "speechControlEnabled": True,
+        "automaticPoweroffWhenDischarging": False,
+        "aiVoiceSoundEffectEnabled": True,
+        "aiVoiceSoundEffectForWaitingEnabled": False,
+    }
+    assert attributes["enum_names"] == {
+        "language": "english",
+        "dryMopStrength": "smart",
+        "cleanMopFreq": "normal",
+        "carpetCleanOption": "avoid",
+        "stationCleanMode": "mop",
+    }
+
+
+def test_absent_protobuf_default_fields_are_not_synthesized() -> None:
+    snapshot = decode_get_config_response({"2": {}})
+
+    assert snapshot.values == {}
+    assert snapshot.raw_fields == {}
+    assert config_snapshot_attributes(snapshot)["typed_values"] == {}
+
+
 def test_unknown_fields_are_deeply_frozen_and_preserved_raw() -> None:
     nested_unknown = {"1": [bytearray(b"a"), {"2": memoryview(b"b")}]}
     snapshot = decode_get_config_response(
         {
-            "2": 3,
+            "2": 0,
             "48": [{"1": 3, "2": b"hello"}],
             "99": nested_unknown,
         }
@@ -457,7 +674,7 @@ def test_unknown_fields_are_deeply_frozen_and_preserved_raw() -> None:
     nested_unknown["1"].append(b"later")
 
     assert snapshot.values == {}
-    assert snapshot.raw_fields[2] == 3
+    assert snapshot.raw_fields[2] == 0
     assert snapshot.raw_fields[48] == ({"1": 3, "2": b"hello"},)
     assert snapshot.raw_fields[99] == {"1": (b"a", {"2": b"b"})}
     with pytest.raises(TypeError):
@@ -471,9 +688,21 @@ def test_unknown_fields_are_deeply_frozen_and_preserved_raw() -> None:
         (1, -1, SetConfigField.VOLUME_PERCENTAGE),
         (1, 101, SetConfigField.VOLUME_PERCENTAGE),
         (1, "50", SetConfigField.VOLUME_PERCENTAGE),
+        (2, 0, SetConfigField.LANGUAGE),
+        (2, 16, SetConfigField.LANGUAGE),
+        (2, True, SetConfigField.LANGUAGE),
         (7, 2, SetConfigField.CHILD_LOCK_ENABLED),
         (7, "1", SetConfigField.CHILD_LOCK_ENABLED),
         (7, b"1", SetConfigField.CHILD_LOCK_ENABLED),
+        (12, 0, SetConfigField.DRY_MOP_STRENGTH),
+        (12, 4, SetConfigField.DRY_MOP_STRENGTH),
+        (13, 0, SetConfigField.CLEAN_MOP_FREQUENCY),
+        (13, 4, SetConfigField.CLEAN_MOP_FREQUENCY),
+        (15, 0, SetConfigField.CARPET_CLEAN_OPTION),
+        (15, 5, SetConfigField.CARPET_CLEAN_OPTION),
+        (21, 0, SetConfigField.STATION_CLEAN_MODE),
+        (21, 7, SetConfigField.STATION_CLEAN_MODE),
+        (26, 2, SetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED),
         (34, 0, SetConfigField.AVOID_MODE),
         (34, 4, SetConfigField.AVOID_MODE),
         (34, True, SetConfigField.AVOID_MODE),

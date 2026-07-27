@@ -5,9 +5,11 @@ integration for Narwal robot vacuums that expose the Narwal WebSocket service
 on the local network. It provides the established vacuum controls, sensors,
 rooms, and live map without requiring a Narwal cloud login.
 
-> **App parity is in progress, not complete.** This fork is adding protocol and
-> read-only diagnostic coverage first, then enabling writes only after
-> model-and-firmware-specific physical validation. See
+> **App parity is in progress, not complete.** This fork exposes a bounded
+> subset of recovered official-app controls through model and capability
+> profiles. New AX15 settings, schedule control, and motion actions have
+> automated protocol/safety coverage but have not yet been physically validated
+> on the target robot. See
 > [App parity status](docs/PARITY_STATUS.md) for the evidence boundary and
 > roadmap.
 
@@ -21,7 +23,7 @@ protocol or the Narwal cloud need a separate transport.
 | **Narwal Flow** (AX12) | Existing local-WebSocket integration | Baseline controls and map; advanced app writes are not assumed from other models. |
 | **Narwal Flow 2** | Existing local-WebSocket integration | Read/protocol work can be tested, but no exact product-and-firmware pair is marked physically validated for parameterized writes in this milestone. |
 | **Freo Z10 Ultra** (CX4) | Community-reported local-WebSocket compatibility | Advanced writes remain unvalidated and fail-closed. |
-| **Freo X10 Pro** (AX15) | Local-WebSocket baseline, community confirmed in [upstream #12](https://github.com/sjmotew/NarwalIntegration/issues/12) | Read-only discovery plus a narrowly gated, supervised parameterized-clean validation service on one exact firmware. |
+| **Freo X10 Pro** (AX15) | Local-WebSocket support, community confirmed in [upstream #12](https://github.com/sjmotew/NarwalIntegration/issues/12) | Existing cleaning/map support plus capability-gated persistent settings, diagnostics, and bounded drive/go-to actions. New writes still need supervised physical validation. |
 | **Freo Z Ultra** (CX7) | Not compatible with this local client | Port 9002 alone is insufficient; local broadcasts were not observed in [upstream #5](https://github.com/sjmotew/NarwalIntegration/issues/5). |
 | **Freo X Ultra** (AX18/AX19) | Not compatible with this local client | Uses a different transport; see [upstream #4](https://github.com/sjmotew/NarwalIntegration/issues/4). |
 | **Freo X Plus** (BX1) | Not compatible with this local client | Cloud-backed transport boundary; requires a separate provider, authentication, and validation effort. |
@@ -33,17 +35,67 @@ is open on another model, collect read-only diagnostics before testing writes.
 
 ## What works today
 
-### Existing compatibility controls
+### Vacuum, dock, and map controls
 
 - Start, pause, resume, stop, return to dock, and locate
-- Room/segment cleaning through the established compatibility path
+- AX15 vacuum, mop, vacuum-then-mop, and vacuum-and-mop modes
+- AX15 water, scrub, suction, route, and pass controls
+- Room/segment cleaning with the selected parameters
+- AX15 dust emptying plus mop wash, dry, and combined wash/dry
 - Battery, charging, cleaning area/time, firmware, task, and station-state
   sensors
 - Local map, room labels, dock marker, and live cleaning trail
 - WebSocket push updates, reconnect, wake, heartbeat, and polling fallback
 
-Normal whole-house start stays on its compatibility command. This fork does not
-convert it into a guessed “all rooms” parameterized task.
+On the AX15, normal whole-house Start applies the visible clean settings to all
+rooms on the current map. Other models retain the compatibility command.
+
+### Capability-gated AX15 parity preview
+
+The six Narwal domain actions are registered globally so automations have a
+stable schema, but each write fails closed at execution time unless the target
+identifies as Freo X10 Pro product key `CNbforyZWI`, advertises the required
+capability, and, where applicable, is in a permitted live state. Persistent
+entities are added once those identity/capability checks and the required live
+snapshot become available, including after late discovery from an asleep
+startup:
+
+- persistent configuration entities for every currently typed `config/set`
+  field: robot volume/language; cleaning, carpet, mop drying/wash, and station
+  modes; child/pet/smart-clean settings; pad protection; dust collection and
+  bag drying; hot-water and massive-dirty cleaning; speech/AI effects and
+  recognition guards; off-dock power-off; return-to-main-map; and station
+  lighting;
+- `narwal.set_schedule_enabled`, which only toggles an existing schedule while
+  preserving its plan, timing, and unknown fields; and
+- `narwal.drive`, `narwal.go_to`, `narwal.stop_navigation`, and
+  `narwal.stop_telecontrol`.
+
+Configuration writes are single-field patches. They are blocked while the
+robot or station is busy, require a known success result, and are followed by a
+fresh `config/get`; an absent, differently typed, or mismatched read-back is
+reported as an error.
+
+All robot-, dock-, schedule-, and configuration-start actions share one
+fail-fast action slot. Each refreshes status while it owns that slot, and every
+new physical action refuses a client-owned or robot-reported point-navigation
+task until it is explicitly stopped. The two stop actions deliberately bypass
+that slot so an emergency stop is never queued behind a startup request.
+
+`narwal.drive` is a 100–500 ms dead-man pulse, not an unbounded joystick. The
+client enters joystick mode, limits publication to 10 Hz, and always attempts
+repeated zero-velocity commands followed by manual mode off. `narwal.go_to`
+uses normalized coordinates on the unrotated map image, requires the current
+map revision, and rejects destinations outside the map or on uncleared,
+occupied, or furniture-marked cells. Stop actions and disconnect cleanup cover
+client-owned joystick and point-navigation work. `stop_telecontrol` first
+invalidates pending motion, then sends its raw dead-man cleanup before awaiting
+the acknowledged cancel/mode-off cleanup.
+
+These controls are **not yet marked supported**: their protocol and failure
+paths are tested, but their physical results on the target AX15 have not been
+checked. Test them with a person beside the robot and
+`narwal.stop_telecontrol` immediately available.
 
 ### Read-only parity foundation
 
@@ -54,33 +106,26 @@ convert it into a guessed “all rooms” parameterized task.
 - Capability decoding with named and raw field diagnostics
 - Conservative `config/get` and current-clean-task decoders that retain unknown
   fields
-- Dynamic model/profile resolution used to keep unvalidated writes fail-closed
+- Profile-gated diagnostic inventories for current/saved cleaning plans,
+  schedules, locally advertised consumable categories, saved/editable map
+  metadata, component firmware, language/voice metadata, and the robot-local
+  cleaning timeline
+- Dynamic model/profile resolution for model-appropriate control surfaces
 
 These decoders are code and diagnostic foundations. A decoded field, command
 name, or advertised capability does not prove that a corresponding write is
-safe.
+safe. The local timeline is not parity with Narwal's separate cloud history,
+and the consumable query does not provide remaining-life values.
 
-### Supervised Freo X10 Pro validation
+### Freo X10 Pro room cleaning
 
-The `narwal.validate_parameterized_clean` service can send an app-derived parameterized room
-clean only when all of these conditions hold:
-
-- the robot identifies as AX15 product key `CNbforyZWI`;
-- firmware is exactly `v01.03.10.03`;
-- the required multi-zone capability is advertised;
-- **Experimental parameterized cleaning** is enabled in the integration
-  options; and
-- that individual service call sets `confirm_unverified: true`.
-
-This is a supervised validation tool, not a supported automation surface. Stay
-near the robot with Stop available and verify its physical behavior. An
-`ACCEPTED` response does not prove that every requested parameter was followed.
-Unknown firmware remains disabled by default.
+The `narwal.clean_rooms` action exposes explicit AX15 room-clean parameters
+without an experimental option or per-call validation flag:
 
 Example:
 
 ```yaml
-action: narwal.validate_parameterized_clean
+action: narwal.clean_rooms
 target:
   entity_id: vacuum.narwal
 data:
@@ -90,7 +135,6 @@ data:
   water: normal
   mop_strength: normal
   passes: 1
-  confirm_unverified: true
 ```
 
 ## Installation
@@ -125,15 +169,22 @@ data:
 
 ## Deliberately unsupported parity areas
 
-This milestone does not expose the following as supported writes:
+This milestone deliberately withholds the following official-app areas:
 
-- station washing, drying, dust collection, lighting, or maintenance actions;
-- `config/set` settings;
-- map mutation, virtual walls/no-go zones, boundary or safety-distance edits;
-- camera, obstacle media, patrol, cruise, or telecontrol;
+- persistent settings for fields that do not have an explicit, typed entity
+  and exact read-back path;
+- schedule creation, deletion, plan/timing edits, or authored cron expressions;
+- destructive map mutation or deletion, including virtual walls/no-go zones,
+  room split/merge, restore, and boundary or safety-distance edits;
+- physical camera/video, obstacle media, patrol, cruise, or remote-camera
+  controls (the Home Assistant camera entity is a rendered map);
+- continuous joystick/gamepad UI and click-on-map navigation UI; the bounded
+  service-level motion primitives above are the current surface;
+- lower-level station maintenance actions;
 - pumps, drain/water exchange, detergent, or plumbing controls;
-- firmware download, upgrade, or rollback; or
-- cloud account, sharing, binding, notification, or history operations.
+- firmware download, installation, upgrade, rollback, or factory reset; or
+- cloud account, device binding/sharing, remote notifications, or cloud history
+  operations.
 
 The Freo X Plus/BX1 cannot be supported by adding AX15 WebSocket topics. It
 needs a separate cloud provider with secure credential handling and an
@@ -149,7 +200,19 @@ and the route toward app parity, read
   the robot; close it again before Home Assistant reconnects.
 - The robot may allow only one WebSocket client at a time.
 - Some reported values and commands vary by product key and firmware.
-- A capability bit describes firmware advertisement, not validated behavior.
+- A capability bit describes firmware advertisement and may still vary in
+  behavior between firmware releases.
+- Capability/config-backed entities are added dynamically when late discovery
+  succeeds. If the robot slept through startup discovery, wake it and allow the
+  next coordinator update to add them; no integration reload is required.
+- The route preset entity and `clean_rooms` route field both require the
+  overlap-adjust capability.
+- On Home Assistant versions without the native vacuum Segment API, use
+  `narwal.clean_rooms`; the native clean-area/segment surface is unavailable.
+- The newly exposed AX15 configuration, schedule, drive, and go-to paths still
+  require supervised physical validation before unattended automation.
+- Point navigation remains subject to the robot's own obstacle avoidance and
+  arrival tolerance; it is not centimeter-accurate positioning.
 - Maps can be stale until a new cleaning cycle refreshes them.
 - Firmware updates may change the reverse-engineered protocol without notice.
 
@@ -161,7 +224,7 @@ and the route toward app parity, read
 | Entities are unavailable | Wake the robot, close the Narwal app, and wait for Home Assistant to reconnect. |
 | Map is missing or stale | Wake the robot; a new clean often refreshes the stored map. |
 | Command receives conflict/not applicable | Wait until the robot and station are idle, then retry a supported compatibility action. |
-| Experimental service is unavailable | Confirm exact AX15 identity/firmware, capability advertisement, and the integration option. Do not bypass the profile gate. |
+| Mop controls are missing | Wake the robot, confirm it identifies as AX15 and advertises multi-zone cleaning, then allow the next coordinator update to add the controls. |
 
 ## Reporting issues
 
@@ -186,7 +249,7 @@ the mobile application.
 
 - Use it at your own risk; there is no warranty.
 - Local-compatible models do not require a cloud account for this integration.
-- Experimental validation must be supervised.
+- Test newly exposed controls while someone can stop the robot if needed.
 - A Narwal firmware update may break or change behavior at any time.
 
 ## Contributing

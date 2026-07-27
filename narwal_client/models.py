@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import math
 import struct
 import time
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from .capabilities import CapabilityMap
 from .config import ConfigSnapshot
@@ -15,9 +19,27 @@ from .const import (
     TOPIC_CMD_GET_ROBOT_TASK_STATUS,
     TOPIC_ROBOT_TASK_STATUS,
     CommandResult,
+    TelecontrolStatus,
     WorkingStatus,
 )
+from .consumables import ConsumableInfoPayload
+from .plan import CleanPlan
+from .schedule import CleanSchedule
 from .task import CurrentCleanTask
+
+if TYPE_CHECKING:
+    from .device_metadata import (
+        FirmwareVersionResponse,
+        GetCurrentVoiceInfoResponse,
+        GetLanguageResponse,
+        GetSupportedLanguagesResponse,
+    )
+    from .history import GetCleanTimeLineResponse
+    from .map_inventory import (
+        CheckMapUpdateInfoResponse,
+        GetEditableMapResponse,
+        StaticMapPayload,
+    )
 
 _LOGGER = logging.getLogger(__name__)
 _ACTIVE_WORKING_STATUS_TTL = 15.0
@@ -320,6 +342,70 @@ def _optional_int(value: Any) -> int | None:
         return None
 
 
+def _is_finite_number(value: Any) -> bool:
+    """Return true only for a finite, non-boolean int or float."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+class MapCellType(StrEnum):
+    """Safety-relevant classification of a decoded map grid value."""
+
+    UNKNOWN = "unknown"
+    ROOM_FLOOR = "room_floor"
+    UNASSIGNED_FLOOR = "unassigned_floor"
+    WALL = "wall"
+    OBSTACLE = "obstacle"
+
+
+def classify_map_pixel(value: int) -> MapCellType:
+    """Classify one decoded Narwal map-grid value without guessing.
+
+    The low byte stores pixel flags and the remaining bits store the room ID.
+    Only assigned room floor is accepted by navigation target validation.
+    """
+    if value == 0:
+        return MapCellType.UNKNOWN
+    if value == 0x20:
+        return MapCellType.UNASSIGNED_FLOOR
+
+    pixel_type = value & 0xFF
+    if pixel_type & 0x08:
+        return MapCellType.OBSTACLE
+    if pixel_type & 0x10:
+        return MapCellType.WALL
+    if value >> 8:
+        return MapCellType.ROOM_FLOOR
+    return MapCellType.UNKNOWN
+
+
+@dataclass(frozen=True)
+class MapBorder:
+    """Raw map coordinate bounds from StaticMapPayload field 6."""
+
+    bottom: int
+    top: int
+    left: int
+    right: int
+
+    def is_valid_for(self, width: int, height: int) -> bool:
+        """Return whether the inclusive border exactly matches the grid."""
+        values = (width, height, self.bottom, self.top, self.left, self.right)
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+            return False
+        return (
+            width > 0
+            and height > 0
+            and self.right >= self.left
+            and self.top >= self.bottom
+            and self.right - self.left + 1 == width
+            and self.top - self.bottom + 1 == height
+        )
+
+
 @dataclass
 class MapData:
     """Map data from get_map response."""
@@ -338,6 +424,14 @@ class MapData:
     obstacles: list[ObstacleInfo] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
     map_id: int = 0  # active map id (field 2.1) — required by clean/start_clean
+    # Corrected StaticMapPayload schema fields. Appended to preserve the legacy
+    # dataclass positional argument order above.
+    map_version: int = 0  # field 2
+    border_top: int = 0  # field 6.2
+    border_right: int = 0  # field 6.4
+    rotate_angle: int = 0  # field 25; app display rotation, not raw renderer
+    edit_version: int = 0  # field 33; also retained in legacy ``area``
+    generation_time: int = 0  # field 34; also retained in ``created_at``
 
     @classmethod
     def from_response(
@@ -385,21 +479,27 @@ class MapData:
 
         resolution = int(payload.get("3", 0))
 
-        # Extract origin offsets from field 6 (coordinate transform).
-        # Field 6: {1: origin_y, 2: ?, 3: origin_x, 4: resolution}
-        # Positions are in grid-offset units: pixel = raw - origin
+        # StaticMapPayload field 6 is an inclusive Border:
+        # {1: bottom, 2: top, 3: left, 4: right}. Preserve origin_x/y as
+        # compatibility aliases for left/bottom.
         origin_x = 0
         origin_y = 0
+        border_top = 0
+        border_right = 0
         field6 = payload.get("6")
         if isinstance(field6, dict):
-            try:
-                origin_x = int(field6.get("3", 0))
-            except (ValueError, TypeError):
-                pass
-            try:
-                origin_y = int(field6.get("1", 0))
-            except (ValueError, TypeError):
-                pass
+            parsed_origin_x = _optional_int(field6.get("3", 0))
+            if parsed_origin_x is not None:
+                origin_x = parsed_origin_x
+            parsed_origin_y = _optional_int(field6.get("1", 0))
+            if parsed_origin_y is not None:
+                origin_y = parsed_origin_y
+            parsed_border_top = _optional_int(field6.get("2", 0))
+            if parsed_border_top is not None:
+                border_top = parsed_border_top
+            parsed_border_right = _optional_int(field6.get("4", 0))
+            if parsed_border_right is not None:
+                border_right = parsed_border_right
 
         # Parse dock position from field 8 (dock/charging station location).
         # Field 8 structure: {1: {1: x_dm, 2: y_dm}, 2: heading_rad}
@@ -442,7 +542,288 @@ class MapData:
             origin_y=origin_y,
             obstacles=obstacles,
             raw=payload,
+            map_version=int(payload.get("2", 0)),
+            border_top=border_top,
+            border_right=border_right,
+            rotate_angle=int(payload.get("25", 0)),
+            edit_version=int(payload.get("33", 0)),
+            generation_time=int(payload.get("34", 0)),
         )
+
+    @property
+    def border(self) -> MapBorder:
+        """Return the field-6 border using legacy left/bottom aliases."""
+        return MapBorder(
+            bottom=self.origin_y,
+            top=self.border_top,
+            left=self.origin_x,
+            right=self.border_right,
+        )
+
+    def has_valid_navigation_geometry(self) -> bool:
+        """Return whether this map can safely support navigation transforms."""
+        return (
+            self.border.is_valid_for(self.width, self.height)
+            and isinstance(self.resolution, int)
+            and not isinstance(self.resolution, bool)
+            and self.resolution > 0
+            and isinstance(self.rotate_angle, int)
+            and not isinstance(self.rotate_angle, bool)
+            and self.rotate_angle in (0, 90, 180, 270)
+        )
+
+    def navigation_revision(self) -> str | None:
+        """Return a stable SHA-256 identity for navigation-relevant map state.
+
+        The current renderer uses the raw unrotated grid. ``rotate_angle`` is
+        still part of the revision so an app-side map orientation change
+        invalidates any pending navigation preview.
+        """
+        if not self.has_valid_navigation_geometry() or not isinstance(
+            self.compressed_map, bytes
+        ):
+            return None
+
+        edit_version = self.edit_version or self.area
+        generation_time = self.generation_time or self.created_at
+        identity = {
+            "border": {
+                "bottom": self.origin_y,
+                "left": self.origin_x,
+                "right": self.border_right,
+                "top": self.border_top,
+            },
+            "edit_version": edit_version,
+            "generation_time": generation_time,
+            "height": self.height,
+            "map_id": self.map_id,
+            "map_version": self.map_version,
+            "resolution": self.resolution,
+            "rotate_angle": self.rotate_angle,
+            "width": self.width,
+        }
+        digest = hashlib.sha256()
+        digest.update(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
+        digest.update(b"\0")
+        digest.update(self.compressed_map)
+        return digest.hexdigest()
+
+    def world_to_grid(
+        self, world_x: float, world_y: float
+    ) -> tuple[float, float] | None:
+        """Convert raw world coordinates to the unrotated bottom-up grid."""
+        if (
+            not self.has_valid_navigation_geometry()
+            or not _is_finite_number(world_x)
+            or not _is_finite_number(world_y)
+            or world_x < self.origin_x
+            or world_x > self.border_right
+            or world_y < self.origin_y
+            or world_y > self.border_top
+        ):
+            return None
+        return (world_x - self.origin_x, world_y - self.origin_y)
+
+    def grid_to_world(
+        self, grid_x: float, grid_y: float
+    ) -> tuple[float, float] | None:
+        """Convert an in-bounds bottom-up grid coordinate to raw world space."""
+        if (
+            not self.has_valid_navigation_geometry()
+            or not _is_finite_number(grid_x)
+            or not _is_finite_number(grid_y)
+            or grid_x < 0
+            or grid_x > self.width - 1
+            or grid_y < 0
+            or grid_y > self.height - 1
+        ):
+            return None
+        return (self.origin_x + grid_x, self.origin_y + grid_y)
+
+    def grid_to_image(
+        self, grid_x: float, grid_y: float, render_scale: int = 1
+    ) -> tuple[float, float] | None:
+        """Convert grid coordinates to the current unrotated PNG coordinates."""
+        if (
+            not isinstance(render_scale, int)
+            or isinstance(render_scale, bool)
+            or render_scale < 1
+        ):
+            return None
+        if self.grid_to_world(grid_x, grid_y) is None:
+            return None
+        return (
+            grid_x * render_scale,
+            (self.height - 1 - grid_y) * render_scale,
+        )
+
+    def image_to_grid_cell(
+        self, image_x: float, image_y: float, render_scale: int = 1
+    ) -> tuple[int, int] | None:
+        """Convert a natural unrotated PNG pixel to its bottom-up grid cell."""
+        if (
+            not self.has_valid_navigation_geometry()
+            or not isinstance(render_scale, int)
+            or isinstance(render_scale, bool)
+            or render_scale < 1
+            or not _is_finite_number(image_x)
+            or not _is_finite_number(image_y)
+            or image_x < 0
+            or image_y < 0
+            or image_x >= self.width * render_scale
+            or image_y >= self.height * render_scale
+        ):
+            return None
+        image_cell_x = math.floor(image_x / render_scale)
+        image_cell_y = math.floor(image_y / render_scale)
+        return (image_cell_x, self.height - 1 - image_cell_y)
+
+    def normalized_image_to_world(
+        self, normalized_x: float, normalized_y: float
+    ) -> tuple[float, float] | None:
+        """Map a normalized natural-image click in ``[0, 1)`` to raw world.
+
+        Normalization makes this independent of renderer scale. The result is
+        deliberately snapped to the selected occupancy cell; ``rotate_angle``
+        is not applied because the integration renders the raw map.
+        """
+        if (
+            not self.has_valid_navigation_geometry()
+            or not _is_finite_number(normalized_x)
+            or not _is_finite_number(normalized_y)
+            or normalized_x < 0
+            or normalized_y < 0
+            or normalized_x >= 1
+            or normalized_y >= 1
+        ):
+            return None
+        grid = self.image_to_grid_cell(
+            normalized_x * self.width,
+            normalized_y * self.height,
+        )
+        if grid is None:
+            return None
+        return self.grid_to_world(*grid)
+
+    def classify_grid_cell(self, grid_x: int, grid_y: int) -> MapCellType | None:
+        """Return the exact map-cell class, or ``None`` for invalid map data."""
+        pixels = self._navigation_pixels()
+        if (
+            pixels is None
+            or not isinstance(grid_x, int)
+            or isinstance(grid_x, bool)
+            or not isinstance(grid_y, int)
+            or isinstance(grid_y, bool)
+            or grid_x < 0
+            or grid_y < 0
+            or grid_x >= self.width
+            or grid_y >= self.height
+        ):
+            return None
+        return classify_map_pixel(pixels[grid_y * self.width + grid_x])
+
+    def is_navigation_target_clear(
+        self,
+        grid_x: int,
+        grid_y: int,
+        clearance_cells: int = 0,
+        *,
+        reject_furniture: bool = True,
+    ) -> bool:
+        """Validate assigned floor and a square clearance around a target cell."""
+        pixels = self._navigation_pixels()
+        if (
+            pixels is None
+            or not isinstance(grid_x, int)
+            or isinstance(grid_x, bool)
+            or not isinstance(grid_y, int)
+            or isinstance(grid_y, bool)
+            or not isinstance(clearance_cells, int)
+            or isinstance(clearance_cells, bool)
+            or clearance_cells < 0
+            or grid_x < 0
+            or grid_y < 0
+            or grid_x >= self.width
+            or grid_y >= self.height
+            or classify_map_pixel(pixels[grid_y * self.width + grid_x])
+            is not MapCellType.ROOM_FLOOR
+        ):
+            return False
+
+        for check_y in range(grid_y - clearance_cells, grid_y + clearance_cells + 1):
+            for check_x in range(
+                grid_x - clearance_cells, grid_x + clearance_cells + 1
+            ):
+                if (
+                    check_x < 0
+                    or check_y < 0
+                    or check_x >= self.width
+                    or check_y >= self.height
+                    or classify_map_pixel(pixels[check_y * self.width + check_x])
+                    is not MapCellType.ROOM_FLOOR
+                ):
+                    return False
+
+        if not reject_furniture:
+            return True
+        for obstacle in self.obstacles:
+            contains = self._furniture_contains_grid_cell(
+                obstacle, grid_x, grid_y, clearance_cells
+            )
+            if contains is None or contains:
+                return False
+        return True
+
+    def _navigation_pixels(self) -> list[int] | None:
+        """Decode an exact-size map grid, failing closed on malformed data."""
+        if (
+            not self.has_valid_navigation_geometry()
+            or not isinstance(self.compressed_map, bytes)
+            or not self.compressed_map
+        ):
+            return None
+
+        from .map_renderer import _decode_packed_varints, decompress_map
+
+        pixels = _decode_packed_varints(decompress_map(self.compressed_map))
+        if len(pixels) != self.width * self.height:
+            return None
+        return pixels
+
+    def _furniture_contains_grid_cell(
+        self,
+        obstacle: ObstacleInfo,
+        grid_x: int,
+        grid_y: int,
+        padding: int,
+    ) -> bool | None:
+        """Return whether a cell intersects an expanded rotated furniture box."""
+        values = (
+            obstacle.center_x,
+            obstacle.center_y,
+            obstacle.width,
+            obstacle.height,
+            obstacle.angle,
+        )
+        if not all(_is_finite_number(value) for value in values):
+            return None
+        if obstacle.width < 0 or obstacle.height < 0:
+            return None
+
+        center_x = obstacle.center_x - self.origin_x
+        center_y = obstacle.center_y - self.origin_y
+        delta_x = grid_x - center_x
+        delta_y = grid_y - center_y
+        angle = math.radians(obstacle.angle)
+        cos_angle = math.cos(angle)
+        sin_angle = math.sin(angle)
+        local_x = delta_x * cos_angle + delta_y * sin_angle
+        local_y = -delta_x * sin_angle + delta_y * cos_angle
+        half_width = obstacle.width / 2 + padding + 0.5
+        half_height = obstacle.height / 2 + padding + 0.5
+        return abs(local_x) <= half_width and abs(local_y) <= half_height
 
     def cleanable_area_cm2(self, room_ids: list[int] | None = None) -> int:
         """Estimate cleanable area in cm² from room floor pixels."""
@@ -668,6 +1049,15 @@ class NarwalState:
     capabilities_fetched: bool = False
     config_snapshot: ConfigSnapshot | None = None
     current_clean_task: CurrentCleanTask | None = None
+    current_clean_plan: CleanPlan | None = None
+    clean_plans: tuple[CleanPlan, ...] = ()
+    clean_schedules: tuple[CleanSchedule, ...] = ()
+    consumable_info: ConsumableInfoPayload | None = None
+    firmware_metadata: FirmwareVersionResponse | None = None
+    configured_language: GetLanguageResponse | None = None
+    supported_languages: GetSupportedLanguagesResponse | None = None
+    current_voice_info: GetCurrentVoiceInfoResponse | None = None
+    clean_timeline: GetCleanTimeLineResponse | None = None
 
     # Session
     session_id: str = ""
@@ -689,6 +1079,14 @@ class NarwalState:
     # Map
     map_data: MapData | None = None
     map_display_data: MapDisplayData | None = None
+    saved_maps: tuple[StaticMapPayload, ...] = ()
+    saved_maps_fetched: bool = False
+    editable_map: GetEditableMapResponse | None = None
+    editable_map_fetched: bool = False
+    map_update_info: CheckMapUpdateInfoResponse | None = None
+    map_update_info_fetched: bool = False
+    point_navigation_path: list[tuple[float, float]] = field(default_factory=list)
+    point_navigation_target: tuple[float, float] | None = None
 
     # Vision obstacles (camera-detected transient objects during cleaning)
     # Download/upgrade status
@@ -715,6 +1113,14 @@ class NarwalState:
     # Dock presence (field 3 sub-field 3)
     # Values observed: 1=on dock, 2=off dock, 6=on dock (charged idle)
     dock_presence: int = 0
+
+    # APK RobotBaseStatus telecontrol diagnostics. Field 3.19 is the
+    # RobotTaskStatus telecontrol status (0=unspecified, 3=point navigation),
+    # field 17 reports the telecontrol stage, and field 31 reports the active
+    # manual-control mode.
+    telecontrol_status: int = int(TelecontrolStatus.UNSPECIFIED)
+    telecontrol_stage: int = 0
+    manual_control_state: int = 0
 
     # Newer Flow firmware sub-state (field 3 sub-field 4).
     # Observed during active clean startup/navigation: 8 -> 7 -> 3.
@@ -793,6 +1199,23 @@ class NarwalState:
         if self.last_active_working_status_time <= 0:
             return False
         return time.monotonic() - self.last_active_working_status_time <= _ACTIVE_WORKING_STATUS_TTL
+
+    @property
+    def is_paused_during_active_task(self) -> bool:
+        """True only when the pause overlay belongs to a live off-dock task.
+
+        RobotBaseStatus field 3.2 can remain set after a task completes and
+        the robot docks. It must not indefinitely block unrelated settings or
+        motion preparation after that stale docked state.
+        """
+        return (
+            self.is_paused
+            and not self.is_docked
+            and (
+                self._working_status_is_cleaning_like()
+                or self.has_recent_active_working_status
+            )
+        )
 
     @property
     def is_cleaning(self) -> bool:
@@ -931,6 +1354,7 @@ class NarwalState:
           3.10 = dock sub-state (1=docked, 2=docking in progress)
           3.12 = dock activity (values 2, 6 observed)
           3.18 = station activity (1=dust gathering, 4=dry/disinfection observed)
+          3.19 = telecontrol status (0=unspecified, 3=point navigation)
 
         Dock indicators (validated via dock_research.py, 5 captures):
           Field 11 = 2 when docked, 1 when undocked
@@ -939,6 +1363,16 @@ class NarwalState:
         Note: field 32 mirrors field 3 exactly (redundant).
         """
         self.raw_base_status = decoded
+        if "17" in decoded:
+            try:
+                self.telecontrol_stage = int(decoded["17"])
+            except (ValueError, TypeError):
+                self.telecontrol_stage = 0
+        if "31" in decoded:
+            try:
+                self.manual_control_state = int(decoded["31"])
+            except (ValueError, TypeError):
+                self.manual_control_state = 0
         # Field 11 = dock indicator (2=docked, 1=undocked)
         if "11" in decoded:
             try:
@@ -961,6 +1395,11 @@ class NarwalState:
         if isinstance(field3, list):
             field3 = field3[0] if field3 else None
         if isinstance(field3, dict):
+            telecontrol_status = field3.get("19")
+            if isinstance(telecontrol_status, int) and not isinstance(
+                telecontrol_status, bool
+            ):
+                self.telecontrol_status = telecontrol_status
             if "1" in field3:
                 try:
                     self.raw_working_status_value = int(field3["1"])

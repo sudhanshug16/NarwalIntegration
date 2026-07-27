@@ -26,19 +26,30 @@ class SetConfigField(IntEnum):
     """Supported ``SetConfig.Request`` field numbers."""
 
     VOLUME_PERCENTAGE = 1
+    LANGUAGE = 2
     CHILD_LOCK_ENABLED = 8
     CLEAN_CARPET_ENABLED = 9
     SMART_CLEAN_DETECTION_ENABLED = 12
+    DRY_MOP_STRENGTH = 13
+    CLEAN_MOP_FREQUENCY = 14
+    CARPET_CLEAN_OPTION = 15
     SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN = 20
+    STATION_CLEAN_MODE = 21
     PET_MODE = 22
     SMART_DEEP_CLEAN_ENABLED = 23
+    MOISTURE_PROOF_PAD_PROTECT_ENABLED = 26
     DUST_GATHERING_ENABLED = 27
     SMART_DUST_GATHERING_ENABLED = 28
     QUIET_DUST_GATHERING_ENABLED = 30
+    DRY_ROBOT_BAG_ENABLED = 31
     HOT_WATER_WASH_ENABLED = 32
     MASSIVE_DIRTY_DEEP_CLEAN_ENABLE = 33
     AVOID_MODE = 34
     ROBOT_CLEAN_MODE = 35
+    SPEECH_CONTROL_ENABLED = 36
+    AUTOMATIC_POWEROFF_WHEN_DISCHARGING = 37
+    AI_VOICE_SOUND_EFFECT_ENABLED = 39
+    AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED = 40
     CORNER_CLEAN_MODE = 41
     CARPET_CLEAN_PRIORITY_OPTION = 45
     CARPET_DEEP_CLEAN_OPTION = 46
@@ -51,19 +62,30 @@ class GetConfigField(IntEnum):
     """Supported ``GetConfig.Response.Config`` field numbers."""
 
     VOLUME_PERCENTAGE = 1
+    LANGUAGE = 2
     CHILD_LOCK_ENABLED = 7
     CLEAN_CARPET_ENABLED = 8
     SMART_CLEAN_DETECTION_ENABLED = 11
+    DRY_MOP_STRENGTH = 12
+    CLEAN_MOP_FREQUENCY = 13
+    CARPET_CLEAN_OPTION = 15
     SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN = 20
+    STATION_CLEAN_MODE = 21
     PET_MODE = 22
     SMART_DEEP_CLEAN_ENABLED = 23
+    MOISTURE_PROOF_PAD_PROTECT_ENABLED = 26
     DUST_GATHERING_ENABLED = 27
     SMART_DUST_GATHERING_ENABLED = 28
     QUIET_DUST_GATHERING_ENABLED = 30
+    DRY_ROBOT_BAG_ENABLED = 31
     HOT_WATER_WASH_ENABLED = 32
     MASSIVE_DIRTY_DEEP_CLEAN_ENABLE = 33
     AVOID_MODE = 34
     ROBOT_CLEAN_MODE = 35
+    SPEECH_CONTROL_ENABLED = 36
+    AUTOMATIC_POWEROFF_WHEN_DISCHARGING = 37
+    AI_VOICE_SOUND_EFFECT_ENABLED = 39
+    AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED = 40
     CORNER_CLEAN_MODE = 41
     CARPET_CLEAN_PRIORITY_OPTION = 46
     CARPET_DEEP_CLEAN_OPTION = 47
@@ -79,6 +101,55 @@ class AvoidMode(IntEnum):
     SMART = 1
     SAFER = 2
     OFF = 3
+
+
+class Language(IntEnum):
+    """Robot voice-language values recovered from the APK."""
+
+    UNSPECIFIED = 0
+    SIMPLIFIED_CHINESE = 1
+    TRADITIONAL_CHINESE = 2
+    ENGLISH = 3
+    KOREAN = 4
+    JAPANESE = 5
+    GERMAN = 6
+    HEBREW = 7
+    ITALIAN = 8
+    FRENCH = 9
+    SPANISH = 10
+    RUSSIAN = 11
+    POLISH = 12
+    TURKISH = 13
+    THAI = 14
+    VIETNAMESE = 15
+
+
+class DryMopStrength(IntEnum):
+    """Mop-drying strength values."""
+
+    UNSPECIFIED = 0
+    QUIET = 1
+    STRONG = 2
+    SMART = 3
+
+
+class CleanMopFrequency(IntEnum):
+    """Mop-cleaning frequency values."""
+
+    UNSPECIFIED = 0
+    EFFICIENT = 1
+    NORMAL = 2
+    DEEP = 3
+
+
+class CarpetCleanOption(IntEnum):
+    """Carpet behavior values."""
+
+    UNSPECIFIED = 0
+    ACROSS = 1
+    PRESSURE = 2
+    IGNORE = 3
+    AVOID = 4
 
 
 class CleanMode(IntEnum):
@@ -140,6 +211,7 @@ _FIELD_SPECS = {
     SetConfigField.VOLUME_PERCENTAGE: SetConfigFieldSpec(
         "volumePercentage", int, 0, 100
     ),
+    SetConfigField.LANGUAGE: SetConfigFieldSpec("language", Language, 1, 15),
     SetConfigField.CHILD_LOCK_ENABLED: SetConfigFieldSpec(
         "childLockEnabled", bool, 0, 1
     ),
@@ -149,12 +221,27 @@ _FIELD_SPECS = {
     SetConfigField.SMART_CLEAN_DETECTION_ENABLED: SetConfigFieldSpec(
         "smartCleanDetectionEnabled", bool, 0, 1
     ),
+    SetConfigField.DRY_MOP_STRENGTH: SetConfigFieldSpec(
+        "dryMopStrength", DryMopStrength, 1, 3
+    ),
+    SetConfigField.CLEAN_MOP_FREQUENCY: SetConfigFieldSpec(
+        "cleanMopFreq", CleanMopFrequency, 1, 3
+    ),
+    SetConfigField.CARPET_CLEAN_OPTION: SetConfigFieldSpec(
+        "carpetCleanOption", CarpetCleanOption, 1, 4
+    ),
     SetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN: SetConfigFieldSpec(
         "switchBackToMainMapAfterTempMapClean", bool, 0, 1
+    ),
+    SetConfigField.STATION_CLEAN_MODE: SetConfigFieldSpec(
+        "stationCleanMode", CleanMode, 1, 6
     ),
     SetConfigField.PET_MODE: SetConfigFieldSpec("petMode", bool, 0, 1),
     SetConfigField.SMART_DEEP_CLEAN_ENABLED: SetConfigFieldSpec(
         "smartDeepCleanEnabled", bool, 0, 1
+    ),
+    SetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED: SetConfigFieldSpec(
+        "moistureProofPadProtectEnabled", bool, 0, 1
     ),
     SetConfigField.DUST_GATHERING_ENABLED: SetConfigFieldSpec(
         "dustGatheringEnabled", bool, 0, 1
@@ -165,6 +252,9 @@ _FIELD_SPECS = {
     SetConfigField.QUIET_DUST_GATHERING_ENABLED: SetConfigFieldSpec(
         "quietDustGatheringEnabled", bool, 0, 1
     ),
+    SetConfigField.DRY_ROBOT_BAG_ENABLED: SetConfigFieldSpec(
+        "dryRobotBagEnabled", bool, 0, 1
+    ),
     SetConfigField.HOT_WATER_WASH_ENABLED: SetConfigFieldSpec(
         "hotWaterWashEnabled", bool, 0, 1
     ),
@@ -174,6 +264,18 @@ _FIELD_SPECS = {
     SetConfigField.AVOID_MODE: SetConfigFieldSpec("avoidMode", AvoidMode, 1, 3),
     SetConfigField.ROBOT_CLEAN_MODE: SetConfigFieldSpec(
         "robotCleanMode", CleanMode, 1, 6
+    ),
+    SetConfigField.SPEECH_CONTROL_ENABLED: SetConfigFieldSpec(
+        "speechControlEnabled", bool, 0, 1
+    ),
+    SetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING: SetConfigFieldSpec(
+        "automaticPoweroffWhenDischarging", bool, 0, 1
+    ),
+    SetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED: SetConfigFieldSpec(
+        "aiVoiceSoundEffectEnabled", bool, 0, 1
+    ),
+    SetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED: SetConfigFieldSpec(
+        "aiVoiceSoundEffectForWaitingEnabled", bool, 0, 1
     ),
     SetConfigField.CORNER_CLEAN_MODE: SetConfigFieldSpec(
         "cornerCleanMode", CornerCleanMode, 1, 3
@@ -201,16 +303,24 @@ SET_CONFIG_FIELD_SPECS: Mapping[SetConfigField, SetConfigFieldSpec] = MappingPro
 
 _GET_TO_SET_FIELDS = {
     GetConfigField.VOLUME_PERCENTAGE: SetConfigField.VOLUME_PERCENTAGE,
+    GetConfigField.LANGUAGE: SetConfigField.LANGUAGE,
     GetConfigField.CHILD_LOCK_ENABLED: SetConfigField.CHILD_LOCK_ENABLED,
     GetConfigField.CLEAN_CARPET_ENABLED: SetConfigField.CLEAN_CARPET_ENABLED,
     GetConfigField.SMART_CLEAN_DETECTION_ENABLED: (
         SetConfigField.SMART_CLEAN_DETECTION_ENABLED
     ),
+    GetConfigField.DRY_MOP_STRENGTH: SetConfigField.DRY_MOP_STRENGTH,
+    GetConfigField.CLEAN_MOP_FREQUENCY: SetConfigField.CLEAN_MOP_FREQUENCY,
+    GetConfigField.CARPET_CLEAN_OPTION: SetConfigField.CARPET_CLEAN_OPTION,
     GetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN: (
         SetConfigField.SWITCH_BACK_TO_MAIN_MAP_AFTER_TEMP_MAP_CLEAN
     ),
+    GetConfigField.STATION_CLEAN_MODE: SetConfigField.STATION_CLEAN_MODE,
     GetConfigField.PET_MODE: SetConfigField.PET_MODE,
     GetConfigField.SMART_DEEP_CLEAN_ENABLED: SetConfigField.SMART_DEEP_CLEAN_ENABLED,
+    GetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED: (
+        SetConfigField.MOISTURE_PROOF_PAD_PROTECT_ENABLED
+    ),
     GetConfigField.DUST_GATHERING_ENABLED: SetConfigField.DUST_GATHERING_ENABLED,
     GetConfigField.SMART_DUST_GATHERING_ENABLED: (
         SetConfigField.SMART_DUST_GATHERING_ENABLED
@@ -218,12 +328,23 @@ _GET_TO_SET_FIELDS = {
     GetConfigField.QUIET_DUST_GATHERING_ENABLED: (
         SetConfigField.QUIET_DUST_GATHERING_ENABLED
     ),
+    GetConfigField.DRY_ROBOT_BAG_ENABLED: SetConfigField.DRY_ROBOT_BAG_ENABLED,
     GetConfigField.HOT_WATER_WASH_ENABLED: SetConfigField.HOT_WATER_WASH_ENABLED,
     GetConfigField.MASSIVE_DIRTY_DEEP_CLEAN_ENABLE: (
         SetConfigField.MASSIVE_DIRTY_DEEP_CLEAN_ENABLE
     ),
     GetConfigField.AVOID_MODE: SetConfigField.AVOID_MODE,
     GetConfigField.ROBOT_CLEAN_MODE: SetConfigField.ROBOT_CLEAN_MODE,
+    GetConfigField.SPEECH_CONTROL_ENABLED: SetConfigField.SPEECH_CONTROL_ENABLED,
+    GetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING: (
+        SetConfigField.AUTOMATIC_POWEROFF_WHEN_DISCHARGING
+    ),
+    GetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED: (
+        SetConfigField.AI_VOICE_SOUND_EFFECT_ENABLED
+    ),
+    GetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED: (
+        SetConfigField.AI_VOICE_SOUND_EFFECT_FOR_WAITING_ENABLED
+    ),
     GetConfigField.CORNER_CLEAN_MODE: SetConfigField.CORNER_CLEAN_MODE,
     GetConfigField.CARPET_CLEAN_PRIORITY_OPTION: (
         SetConfigField.CARPET_CLEAN_PRIORITY_OPTION
@@ -588,13 +709,17 @@ __all__ = [
     "GET_CONFIG_FIELD_TO_SET_CONFIG_FIELD",
     "SET_CONFIG_FIELD_SPECS",
     "AvoidMode",
+    "CarpetCleanOption",
     "CarpetCleanPriorityOption",
     "CarpetDeepCleanOption",
+    "CleanMopFrequency",
     "CleanMode",
     "ConfigSnapshot",
     "ConfigCodecError",
     "CornerCleanMode",
+    "DryMopStrength",
     "GetConfigField",
+    "Language",
     "SetConfigField",
     "SetConfigFieldSpec",
     "SetConfigPatch",

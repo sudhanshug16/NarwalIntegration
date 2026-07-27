@@ -6,6 +6,7 @@ on the NarwalVacuum entity using HA stubs.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -36,8 +37,17 @@ def _make_vacuum(state: NarwalState | None = None) -> NarwalVacuum:
     coordinator.config_entry.data = {"device_id": "test_dev_001"}
     coordinator.config_entry.title = "Narwal Test"
     coordinator.client = MagicMock()
-    coordinator.client.state = MagicMock()
-    coordinator.client.state.firmware_version = "1.0.0"
+    # Physical actions refresh ``client.state`` before issuing a command.
+    # Use a real state object here so the safety properties are booleans rather
+    # than truthy MagicMocks, and make that refresh an awaitable no-op.
+    client_state = state if state is not None else NarwalState()
+    client_state.firmware_version = "1.0.0"
+    coordinator.client.state = client_state
+    coordinator.client.get_status = AsyncMock()
+    coordinator.action_lock = asyncio.Lock()
+    coordinator.exclusive_action_lock = MagicMock(
+        return_value=coordinator.action_lock
+    )
     coordinator.last_update_success = True
     coordinator.parameterized_clean_enabled = False
 
@@ -231,6 +241,43 @@ class TestAsyncCleanSegments:
 
 class TestAsyncStart:
     """Tests for starting and resuming cleans."""
+
+    async def test_x10_start_uses_visible_mop_settings_for_all_rooms(self) -> None:
+        """Normal Start applies the selected mode to every mapped room."""
+        state = NarwalState()
+        state.map_data = MapData(
+            rooms=[
+                RoomInfo(room_id=4, name="Kitchen", room_sub_type=0, category=1),
+                RoomInfo(room_id=7, name="Office", room_sub_type=0, category=1),
+            ]
+        )
+        vac = _make_vacuum(state=state)
+        vac.coordinator.parameterized_clean_enabled = True
+        vac.coordinator.client.robot_awake = True
+        vac.coordinator.client.state.map_data = state.map_data
+        vac.coordinator.client.start_rooms = AsyncMock(
+            return_value=MagicMock(result_code=0, success=True)
+        )
+        vac.coordinator.select_options = {
+            "mode": "Mop",
+            "suction": "Standard",
+            "water": "Wet",
+            "scrub": "High",
+            "passes": "2",
+            "route": "Meticulous",
+        }
+
+        await vac.async_start()
+
+        vac.coordinator.client.start_rooms.assert_awaited_once_with(
+            [4, 7],
+            work_mode=WorkMode.MOP,
+            fan=FanLevel.NORMAL,
+            water=MopHumidity.WET,
+            mop_strength=MopStrengthLevel.HIGH,
+            passes=2,
+            route=CleaningRoute.METICULOUS,
+        )
 
     async def test_docked_stale_pause_starts_new_clean(self) -> None:
         """A stale paused status on the dock must not resume an old task."""

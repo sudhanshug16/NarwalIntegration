@@ -23,7 +23,6 @@ NARWAL_MODELS: dict[str, str] = {
 
 CONF_MODEL = "model"
 CONF_PRODUCT_KEY = "product_key"
-CONF_ENABLE_EXPERIMENTAL_CLEANING = "enable_experimental_cleaning"
 
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,
@@ -32,6 +31,8 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.CAMERA,
     Platform.BUTTON,
+    Platform.SWITCH,
+    Platform.NUMBER,
 ]
 
 CONF_SHOW_ROOM_LABELS = "show_room_labels"
@@ -39,7 +40,12 @@ CONF_SHOW_FURNITURE = "show_furniture"
 CONF_SHOW_FURNITURE_LABELS = "show_furniture_labels"
 CONF_MAP_ROTATION = "map_rotation"
 CONF_MAP_ZOOM = "map_zoom"
-SERVICE_VALIDATE_PARAMETERIZED_CLEAN = "validate_parameterized_clean"
+SERVICE_CLEAN_ROOMS = "clean_rooms"
+SERVICE_DRIVE = "drive"
+SERVICE_GO_TO = "go_to"
+SERVICE_STOP_NAVIGATION = "stop_navigation"
+SERVICE_STOP_TELECONTROL = "stop_telecontrol"
+SERVICE_SET_SCHEDULE_ENABLED = "set_schedule_enabled"
 
 MAP_OPTION_DEFAULTS: dict[str, bool] = {
     CONF_SHOW_ROOM_LABELS: True,

@@ -17,6 +17,10 @@ from __future__ import annotations
 import io
 import logging
 import zlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PIL import Image, ImageDraw
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -642,8 +646,10 @@ def render_overlay(
     robot_y: float | None = None,
     robot_heading: float | None = None,
     trail: list[tuple[float, float]] | None = None,
+    navigation_path: list[tuple[float, float]] | None = None,
+    navigation_target: tuple[float, float] | None = None,
 ) -> bytes:
-    """Draw robot position and trail on a copy of the cached base map.
+    """Draw robot position, cleaning trail, and point navigation overlays.
 
     Args:
         base_img: Cached PIL Image from render_base_map (not modified).
@@ -652,6 +658,8 @@ def render_overlay(
         robot_y: Robot Y in grid coordinates.
         robot_heading: Heading in degrees.
         trail: List of (grid_x, grid_y) positions to draw as cleaning path.
+        navigation_path: Planned point-navigation path in grid coordinates.
+        navigation_target: Requested point-navigation destination in grid coordinates.
 
     Returns:
         PNG bytes of the composited image.
@@ -679,6 +687,37 @@ def render_overlay(
                 [(x1, y1), (x2, y2)],
                 fill=color,
                 width=max(2, 2 * scale),
+            )
+
+    # Draw the robot-planned point-navigation path and selected destination.
+    if navigation_path and len(navigation_path) >= 2:
+        points = [
+            (
+                int(round(point_x * scale)),
+                int(round((height - 1 - point_y) * scale)),
+            )
+            for point_x, point_y in navigation_path
+        ]
+        draw.line(
+            points,
+            fill=(190, 70, 255),
+            width=max(2, 2 * scale),
+        )
+    if navigation_target is not None:
+        target_x = int(round(navigation_target[0] * scale))
+        target_y = int(round((height - 1 - navigation_target[1]) * scale))
+        if 0 <= target_x < width and 0 <= target_y < img.height:
+            radius = max(3 * scale, min(img.width, img.height) // 100)
+            draw.ellipse(
+                (
+                    target_x - radius,
+                    target_y - radius,
+                    target_x + radius,
+                    target_y + radius,
+                ),
+                fill=(190, 70, 255),
+                outline=(255, 235, 255),
+                width=max(1, scale),
             )
 
     # Draw robot

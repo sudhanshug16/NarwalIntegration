@@ -6,7 +6,7 @@ import struct
 import time
 import zlib
 
-from narwal_client.const import WorkingStatus
+from narwal_client.const import TelecontrolStatus, WorkingStatus
 from narwal_client.models import (
     MapData,
     NarwalState,
@@ -111,6 +111,22 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.STANDBY
         assert state.is_docked
 
+    def test_pause_overlay_is_ignored_when_stale_on_dock(self) -> None:
+        """Field 3.2 must not permanently block actions after docking."""
+        state = NarwalState(
+            working_status=WorkingStatus.CLEANING,
+            is_paused=True,
+            dock_sub_state=1,
+        )
+
+        assert state.is_docked
+        assert not state.is_paused_during_active_task
+
+        state.dock_sub_state = 0
+
+        assert not state.is_docked
+        assert state.is_paused_during_active_task
+
     def test_update_from_base_status_standby_off_dock_field11(self) -> None:
         """STANDBY(1) with field 11=1 means off dock (validated via dock_research)."""
         state = NarwalState()
@@ -165,6 +181,20 @@ class TestNarwalState:
         assert state.station_activity == 4
         assert state.is_station_active
         assert state.is_docked
+
+    def test_update_from_base_status_telecontrol_diagnostics(self) -> None:
+        """Top-level fields 17 and 31 retain official-app motion state."""
+        state = NarwalState()
+
+        state.update_from_base_status({"17": 0, "31": 1})
+
+        assert state.telecontrol_stage == 0
+        assert state.manual_control_state == 1
+
+        state.update_from_base_status({"17": "bad", "31": {}})
+
+        assert state.telecontrol_stage == 0
+        assert state.manual_control_state == 0
 
     def test_station_activity_resets_when_absent(self) -> None:
         """field3.18 resets when later base status omits it."""
@@ -340,6 +370,19 @@ class TestNarwalState:
         )
 
         assert state.current_room_name == "Landing"
+
+    def test_base_status_records_explicit_telecontrol_status(self) -> None:
+        state = NarwalState()
+
+        state.update_from_base_status(
+            {"3": {"19": int(TelecontrolStatus.POINT_NAVI)}}
+        )
+
+        assert state.telecontrol_status == TelecontrolStatus.POINT_NAVI
+
+        state.update_from_base_status({"3": {"19": True}})
+
+        assert state.telecontrol_status == TelecontrolStatus.POINT_NAVI
 
     def test_task_room_uses_current_map_display_name(self) -> None:
         """Task telemetry uses the current user-facing map room name."""

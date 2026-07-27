@@ -6,13 +6,25 @@ import asyncio
 import logging
 import time
 from datetime import timedelta
+from enum import IntEnum
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_ENABLE_EXPERIMENTAL_CLEANING, DOMAIN
-from .narwal_client import NarwalClient, NarwalConnectionError, NarwalState
+from .const import DOMAIN
+from .narwal_client import (
+    ConfigSnapshot,
+    GetCleanSchedulesResponse,
+    ManualControlMode,
+    NarwalClient,
+    NarwalCommandError,
+    NarwalConnectionError,
+    NarwalState,
+    SetConfigField,
+    SetConfigPatch,
+    TelecontrolStatus,
+)
 from .narwal_client.const import ACTIVE_CLEANING_STATUSES, WorkingStatus
 from .profile import DeviceProfile, profile_for_client
 
@@ -23,6 +35,44 @@ POLL_INTERVAL = timedelta(seconds=60)
 # Fast re-poll when state is incomplete (robot asleep at startup)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
+
+
+def active_telecontrol_reason(client: NarwalClient) -> str | None:
+    """Return a fail-closed reason when movement is owned by telecontrol.
+
+    A point-navigation request can remain active after its short startup
+    transaction releases the coordinator action lock. Every subsequent
+    physical action must consult both client ownership and explicit robot
+    telemetry before it assumes the dock/robot is safe to repurpose.
+    """
+    manual_active = getattr(client, "manual_control_active", False)
+    if manual_active is True:
+        return "Manual control is active; call stop_telecontrol first"
+
+    manual_state = getattr(client, "manual_control_state", int(ManualControlMode.OFF))
+    if (
+        isinstance(manual_state, int)
+        and not isinstance(manual_state, bool)
+        and manual_state != int(ManualControlMode.OFF)
+    ):
+        return "Manual control is active; call stop_telecontrol first"
+
+    point_navigation_active = getattr(client, "point_navigation_active", False)
+    if point_navigation_active is True:
+        return "Point navigation is active; call stop_navigation first"
+
+    telecontrol_status = getattr(
+        client,
+        "telecontrol_status",
+        int(TelecontrolStatus.UNSPECIFIED),
+    )
+    if (
+        isinstance(telecontrol_status, int)
+        and not isinstance(telecontrol_status, bool)
+        and telecontrol_status == int(TelecontrolStatus.POINT_NAVI)
+    ):
+        return "Point navigation is active; call stop_navigation first"
+    return None
 
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
@@ -59,32 +109,153 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._prev_working_status = WorkingStatus.UNKNOWN
         self._map_fetch_pending = False
         self._last_display_map_resub: float = 0.0
+        self._inventory_fetch_pending = False
+        self._last_inventory_attempt: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
         self.select_options: dict[str, str] = {}
+        # Every state-changing robot/station action shares one fail-fast lock.
+        # The lock spans refresh + guard + command so a station task cannot
+        # start between a navigation/config/schedule preflight and its write.
+        self.action_lock = asyncio.Lock()
+        # Kept as an alias for integrations/tests that referred to the earlier
+        # station-only name. It deliberately points at the shared lock.
+        self.station_action_lock = self.action_lock
 
     @property
     def device_profile(self) -> DeviceProfile:
-        """Return the current model/firmware validation profile."""
-        return profile_for_client(
-            self.client,
-            experimental_cleaning=bool(
-                self.config_entry.options.get(
-                    CONF_ENABLE_EXPERIMENTAL_CLEANING,
-                    False,
-                )
-            ),
-        )
+        """Return the current model/firmware profile."""
+        return profile_for_client(self.client)
 
     @property
     def parameterized_clean_enabled(self) -> bool:
-        """Return whether normal parameterized cleaning is validated."""
+        """Return whether full clean controls are available."""
         return self.device_profile.parameterized_clean_enabled
 
     @property
-    def parameterized_clean_validation_enabled(self) -> bool:
-        """Return whether the supervised AX15 validation service is enabled."""
-        return self.device_profile.parameterized_clean_validation_enabled
+    def telecontrol_enabled(self) -> bool:
+        """Return whether this device exposes bounded telecontrol actions."""
+        return self.device_profile.telecontrol_enabled
+
+    @property
+    def config_writes_enabled(self) -> bool:
+        """Return whether this device exposes verified config writes."""
+        return self.device_profile.config_writes_enabled
+
+    def exclusive_action_lock(self, action: str) -> asyncio.Lock:
+        """Return the shared physical-action lock or fail instead of queueing."""
+        if self.action_lock.locked():
+            raise NarwalCommandError(
+                f"Another Narwal action is already in progress; cannot {action}"
+            )
+        return self.action_lock
+
+    def assert_no_active_telecontrol(self) -> None:
+        """Reject a competing physical action while telecontrol owns motion."""
+        if reason := active_telecontrol_reason(self.client):
+            raise NarwalCommandError(reason)
+
+    async def async_set_config(
+        self,
+        field: SetConfigField,
+        value: bool | int | IntEnum,
+    ) -> ConfigSnapshot:
+        """Write one AX15 setting after capability and live-state checks."""
+        patch = SetConfigPatch(field=field, value=value)
+        if not self.config_writes_enabled:
+            raise NarwalCommandError(
+                "Configuration writes require an AX15 robot advertising "
+                "UPLOAD_CONFIGURATION"
+            )
+
+        async with self.exclusive_action_lock("change configuration"):
+            return await self._async_set_config_locked(patch)
+
+    async def _async_set_config_locked(
+        self,
+        patch: SetConfigPatch,
+    ) -> ConfigSnapshot:
+        """Run one configuration transaction while the action lock is held."""
+
+        client = self.client
+        try:
+            if not client.robot_awake:
+                woke = await client.wake(timeout=10.0)
+                if not woke:
+                    raise NarwalCommandError(
+                        "Could not wake the robot for a configuration write"
+                    )
+            await client.get_status(full_update=True)
+        except NarwalCommandError:
+            raise
+        except Exception as err:
+            raise NarwalCommandError(
+                "Could not confirm the robot state for a configuration write"
+            ) from err
+
+        state = client.state
+        if (
+            state.is_cleaning
+            or state.is_paused_during_active_task
+            or state.is_returning
+        ):
+            raise NarwalCommandError(
+                "Configuration writes are blocked during cleaning, pause, "
+                "or return-to-dock tasks"
+            )
+        if state.is_station_active:
+            raise NarwalCommandError(
+                "Configuration writes are blocked during base-station tasks"
+            )
+        self.assert_no_active_telecontrol()
+
+        snapshot = await client.set_config_patch(patch)
+        self.async_set_updated_data(client.state)
+        return snapshot
+
+    async def async_set_schedule_enabled(
+        self,
+        task_id: int,
+        enabled: bool,
+    ) -> GetCleanSchedulesResponse:
+        """Enable or disable one existing schedule with exact read-back."""
+        if not self.device_profile.schedule_inventory_enabled:
+            raise NarwalCommandError(
+                "Schedule control is not available for this model and capability set"
+            )
+
+        async with self.exclusive_action_lock("change a schedule"):
+            return await self._async_set_schedule_enabled_locked(task_id, enabled)
+
+    async def _async_set_schedule_enabled_locked(
+        self,
+        task_id: int,
+        enabled: bool,
+    ) -> GetCleanSchedulesResponse:
+        """Run one schedule transaction while the action lock is held."""
+        client = self.client
+        if not client.robot_awake:
+            woke = await client.wake(timeout=10.0)
+            if not woke:
+                raise NarwalCommandError("Could not wake the robot for schedule control")
+        await client.get_status(full_update=True)
+        state = client.state
+        if (
+            state.is_cleaning
+            or state.is_paused_during_active_task
+            or state.is_returning
+        ):
+            raise NarwalCommandError(
+                "Schedule changes are blocked during cleaning or navigation"
+            )
+        if state.is_station_active:
+            raise NarwalCommandError(
+                "Schedule changes are blocked during base-station tasks"
+            )
+        self.assert_no_active_telecontrol()
+        result = await client.set_clean_schedule_enabled(task_id, enabled)
+        self.async_set_updated_data(client.state)
+        return result
 
     async def async_setup(self) -> None:
         """Connect to the vacuum and start the WebSocket listener.
@@ -143,6 +314,8 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             self.client.start_listening(),
             f"{DOMAIN}_ws_listener",
         )
+        if self.client.robot_awake:
+            self._schedule_read_only_inventory_refresh()
 
         state = self.client.state
         _LOGGER.info(
@@ -213,6 +386,14 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
 
         self.async_set_updated_data(state)
 
+        if (
+            not getattr(self, "_inventory_fetch_pending", False)
+            and time.monotonic()
+            - getattr(self, "_last_inventory_attempt", 0.0)
+            >= 300
+        ):
+            self._schedule_read_only_inventory_refresh()
+
         # Broadcast arrived — switch back to normal polling if in fast mode
         if self._fast_poll_remaining > 0:
             self._fast_poll_remaining = 0
@@ -243,6 +424,92 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.subscribe_to_topics()
         except Exception:
             _LOGGER.debug("Topic re-subscription failed")
+
+    def _schedule_read_only_inventory_refresh(self) -> None:
+        """Schedule low-frequency plan/schedule/map/maintenance metadata reads."""
+        profile = self.device_profile
+        if not (
+            profile.clean_plan_inventory_enabled
+            or profile.schedule_inventory_enabled
+            or profile.saved_map_inventory_enabled
+            or profile.editable_map_inventory_enabled
+            or profile.map_update_inventory_enabled
+            or profile.consumable_inventory_enabled
+            or profile.firmware_inventory_enabled
+            or profile.language_inventory_enabled
+            or profile.voice_inventory_enabled
+            or profile.history_inventory_enabled
+        ):
+            return
+        if getattr(self, "_inventory_fetch_pending", False):
+            return
+        self._inventory_fetch_pending = True
+        self._last_inventory_attempt = time.monotonic()
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._refresh_read_only_inventory(),
+            f"{DOMAIN}_inventory_refresh",
+        )
+
+    async def _refresh_read_only_inventory(self) -> None:
+        """Refresh capability-backed official-app inventories without writes."""
+        try:
+            profile = self.device_profile
+            if profile.clean_plan_inventory_enabled:
+                try:
+                    await self.client.get_current_clean_plan()
+                    await self.client.get_clean_plans()
+                except Exception:
+                    _LOGGER.debug("Could not refresh clean-plan inventory")
+            if profile.schedule_inventory_enabled:
+                try:
+                    await self.client.get_clean_schedules()
+                except Exception:
+                    _LOGGER.debug("Could not refresh cleaning schedules")
+            if profile.consumable_inventory_enabled:
+                try:
+                    await self.client.get_consumable_info()
+                except Exception:
+                    _LOGGER.debug("Could not refresh consumable categories")
+            if profile.saved_map_inventory_enabled:
+                try:
+                    await self.client.get_saved_maps()
+                except Exception:
+                    _LOGGER.debug("Could not refresh saved-map inventory")
+            if profile.editable_map_inventory_enabled:
+                try:
+                    await self.client.get_editable_map()
+                except Exception:
+                    _LOGGER.debug("Could not refresh editable-map metadata")
+            if profile.map_update_inventory_enabled:
+                try:
+                    await self.client.check_map_update_info()
+                except Exception:
+                    _LOGGER.debug("Could not refresh supplementary map-update info")
+            if profile.firmware_inventory_enabled:
+                try:
+                    await self.client.get_firmware_metadata()
+                except Exception:
+                    _LOGGER.debug("Could not refresh component firmware metadata")
+            if profile.language_inventory_enabled:
+                try:
+                    await self.client.get_language_metadata()
+                    await self.client.get_supported_languages()
+                except Exception:
+                    _LOGGER.debug("Could not refresh language metadata")
+            if profile.voice_inventory_enabled:
+                try:
+                    await self.client.get_current_voice_info()
+                except Exception:
+                    _LOGGER.debug("Could not refresh voice-package metadata")
+            if profile.history_inventory_enabled:
+                try:
+                    await self.client.get_clean_timeline()
+                except Exception:
+                    _LOGGER.debug("Could not refresh local cleaning timeline")
+            self.async_set_updated_data(self.client.state)
+        finally:
+            self._inventory_fetch_pending = False
 
     async def _refresh_dock_status(self) -> None:
         """Immediate get_status() after return-to-dock to refresh dock fields."""

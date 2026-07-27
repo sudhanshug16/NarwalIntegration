@@ -10,6 +10,7 @@ from homeassistant.components.vacuum import (
     VacuumActivity,
     VacuumEntityFeature,
 )
+from homeassistant.exceptions import HomeAssistantError
 
 try:
     from homeassistant.components.vacuum import Segment
@@ -20,7 +21,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
 from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
-from .coordinator import NarwalCoordinator
+from .coordinator import NarwalCoordinator, active_telecontrol_reason
 from .entity import NarwalEntity
 from .narwal_client import (
     CleaningRoute,
@@ -155,9 +156,31 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
             _LOGGER.debug("Robot not awake — sending wake burst")
             await client.wake(timeout=10.0)
 
+    async def _confirm_no_competing_physical_action(self, action: str) -> None:
+        """Refresh and reject station/telecontrol work before moving the robot."""
+        client = self.coordinator.client
+        try:
+            await client.get_status(full_update=True)
+        except Exception as err:
+            raise HomeAssistantError(
+                f"Could not confirm the robot state before {action}"
+            ) from err
+        if client.state.is_station_active:
+            raise HomeAssistantError(
+                f"Wait for the base-station task to finish before {action}"
+            )
+        if reason := active_telecontrol_reason(client):
+            raise HomeAssistantError(reason)
+
     async def async_start(self) -> None:
         """Start or resume cleaning using the selected clean parameters."""
+        async with self.coordinator.exclusive_action_lock("start cleaning"):
+            await self._async_start_locked()
+
+    async def _async_start_locked(self) -> None:
+        """Start or resume cleaning while holding the shared action lock."""
         await self._ensure_awake()
+        await self._confirm_no_competing_physical_action("starting cleaning")
         state = self.coordinator.data
         # is_paused stays stale after docking — only trust it during cleaning
         is_cleaning = bool(
@@ -170,10 +193,41 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         )
         if is_cleaning and state.is_paused:
             await self.coordinator.client.resume(timeout=self._ACTION_TIMEOUT)
+        elif self.coordinator.parameterized_clean_enabled:
+            client = self.coordinator.client
+            if client.state.map_data is None:
+                await client.get_map()
+            room_ids = (
+                [
+                    room.room_id
+                    for room in client.state.map_data.rooms
+                    if room.room_id > 0
+                ]
+                if client.state.map_data is not None
+                else []
+            )
+            if not room_ids:
+                _LOGGER.warning(
+                    "No map rooms are available; falling back to compatibility start"
+                )
+                resp = await client.start()
+            else:
+                resp = await client.start_rooms(
+                    room_ids,
+                    **self._selected_clean_parameters(),
+                )
+            _LOGGER.info(
+                "Parameterized start response: code=%s, success=%s, rooms=%s",
+                resp.result_code,
+                resp.success,
+                room_ids,
+            )
+            if not resp.success:
+                _LOGGER.warning(
+                    "Parameterized start did not succeed (code=%s)",
+                    resp.result_code,
+                )
         else:
-            # Whole-house start intentionally stays on the established
-            # compatibility command. Parameterized payloads are only used for
-            # explicit room-clean requests on an eligible device profile.
             resp = await self.coordinator.client.start()
             _LOGGER.info(
                 "Start command response: code=%s, success=%s",
@@ -198,7 +252,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_return_to_base(self, **kwargs) -> None:
         """Return to the dock."""
+        async with self.coordinator.exclusive_action_lock("return to the dock"):
+            await self._async_return_to_base_locked()
+
+    async def _async_return_to_base_locked(self) -> None:
+        """Return to the dock while holding the shared action lock."""
         await self._ensure_awake()
+        await self._confirm_no_competing_physical_action("returning to the dock")
         resp = await self.coordinator.client.return_to_base(timeout=self._ACTION_TIMEOUT)
         _LOGGER.info(
             "Return-to-base response: code=%s, success=%s",
@@ -216,6 +276,11 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
         """Set the fan speed."""
+        async with self.coordinator.exclusive_action_lock("change fan speed"):
+            await self._async_set_fan_speed_locked(fan_speed)
+
+    async def _async_set_fan_speed_locked(self, fan_speed: str) -> None:
+        """Set fan speed while holding the shared action lock."""
         level = FAN_SPEED_MAP.get(fan_speed)
         if level is not None:
             await self.coordinator.client.set_fan_speed(level)
@@ -266,7 +331,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         Converts string segment IDs back to integer room IDs and sends
         a room-specific clean command to the robot.
         """
+        async with self.coordinator.exclusive_action_lock("start room cleaning"):
+            await self._async_clean_segments_locked(segment_ids)
+
+    async def _async_clean_segments_locked(self, segment_ids: list[str]) -> None:
+        """Clean room segments while holding the shared action lock."""
         await self._ensure_awake()
+        await self._confirm_no_competing_physical_action("starting room cleaning")
         room_ids = [int(sid) for sid in segment_ids]
         _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
         if self.coordinator.parameterized_clean_enabled:

@@ -8,13 +8,19 @@ import random
 import time
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import websockets
 import websockets.exceptions
 
 from .capabilities import CapabilityMap, normalize_feature_response
-from .config import ConfigSnapshot, decode_get_config_response
+from .config import (
+    ConfigSnapshot,
+    SetConfigPatch,
+    decode_get_config_response,
+    encode_set_config_patch,
+)
 from .const import (
     BROADCAST_STALE_TIMEOUT,
     COMMAND_RESPONSE_TIMEOUT,
@@ -30,6 +36,7 @@ from .const import (
     TOPIC_CMD_ACTIVE_ROBOT,
     TOPIC_CMD_APP_HEARTBEAT,
     TOPIC_CMD_CANCEL,
+    TOPIC_CMD_CHECK_MAP_UPDATE_INFO,
     TOPIC_CMD_CLEAN_TASK,
     TOPIC_CMD_DRY_DUST_BAG,
     TOPIC_CMD_DRY_MOP,
@@ -39,23 +46,38 @@ from .const import (
     TOPIC_CMD_FORCE_END,
     TOPIC_CMD_GET_ALL_MAPS,
     TOPIC_CMD_GET_BASE_STATUS,
+    TOPIC_CMD_GET_CLEAN_PLANS,
     TOPIC_CMD_GET_CLEAN_PROGRESS_INFO,
+    TOPIC_CMD_GET_CLEAN_SCHEDULES,
+    TOPIC_CMD_GET_CLEAN_TIMELINE,
     TOPIC_CMD_GET_CONFIG,
+    TOPIC_CMD_GET_CONSUMABLE_INFO,
+    TOPIC_CMD_GET_CURRENT_CLEAN_PLAN,
     TOPIC_CMD_GET_CURRENT_TASK,
+    TOPIC_CMD_GET_CURRENT_VOICE_INFO,
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME,
+    TOPIC_CMD_GET_EDITABLE_MAP,
     TOPIC_CMD_GET_FEATURE_LIST,
+    TOPIC_CMD_GET_FIRMWARE_VERSION,
+    TOPIC_CMD_GET_LANGUAGE,
     TOPIC_CMD_GET_MAP,
     TOPIC_CMD_GET_ROBOT_TASK_STATUS,
+    TOPIC_CMD_GET_SUPPORTED_LANGUAGES,
     TOPIC_CMD_NOTIFY_APP_EVENT,
     TOPIC_CMD_PAUSE,
     TOPIC_CMD_PLAN_START,
+    TOPIC_CMD_POINT_NAVI,
     TOPIC_CMD_RECALL,
     TOPIC_CMD_RESUME,
+    TOPIC_CMD_SET_CONFIG,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_SET_LED,
+    TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
     TOPIC_CMD_SET_MOP_HUMIDITY,
     TOPIC_CMD_TAKE_PICTURE,
+    TOPIC_CMD_UPDATE_CLEAN_SCHEDULE,
+    TOPIC_CMD_VELOCITY_CONTROL,
     TOPIC_CMD_WASH_AND_DRY_MOP,
     TOPIC_CMD_WASH_MOP,
     TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS,
@@ -70,12 +92,50 @@ from .const import (
     CleaningRoute,
     CommandResult,
     FanLevel,
+    ManualControlMode,
     MopHumidity,
     MopStrengthLevel,
+    TelecontrolStatus,
     WorkingStatus,
     WorkMode,
 )
+from .consumables import (
+    GetConsumableInfoResponse,
+    decode_get_consumable_info_response,
+)
+from .device_metadata import (
+    FirmwareVersionResponse,
+    GetCurrentVoiceInfoResponse,
+    GetLanguageResponse,
+    GetSupportedLanguagesResponse,
+    decode_get_current_voice_info_response,
+    decode_get_firmware_version_response,
+    decode_get_language_response,
+    decode_get_supported_languages_response,
+)
+from .history import (
+    GetCleanTimeLineResponse,
+    decode_get_clean_time_line_response,
+    encode_get_clean_time_line_request,
+)
+from .map_inventory import (
+    CheckMapUpdateInfoResponse,
+    GetAllReducedMapsResponse,
+    GetEditableMapRequest,
+    GetEditableMapResponse,
+    MapRequestFormat,
+    decode_check_map_update_info_response,
+    decode_get_all_reduced_maps_response,
+    decode_get_editable_map_response,
+    encode_get_editable_map_request,
+)
 from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState
+from .plan import (
+    CleanPlansResponse,
+    CurrentPlanResponse,
+    decode_clean_plans_response,
+    decode_current_plan_response,
+)
 from .protocol import (
     PROTOBUF_FIELD5_TAG,
     NarwalMessage,
@@ -83,7 +143,25 @@ from .protocol import (
     build_frame,
     parse_frame,
 )
+from .schedule import (
+    GetCleanSchedulesResponse,
+    ScheduleError,
+    UpdateCleanScheduleRequest,
+    decode_get_clean_schedules_response,
+    decode_update_clean_schedule_response,
+    encode_update_clean_schedule_request,
+)
 from .task import CurrentCleanTask, decode_current_task_response
+from .telecontrol import (
+    Point,
+    PoseData,
+    TelecontrolCodecError,
+    decode_point_navi_plan_traj,
+    encode_cancel_navigation_request,
+    encode_point_navi_request,
+    encode_set_manual_control_mode,
+    encode_telecontrol_velocity,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,6 +182,10 @@ _AUX_STATUS_TOPICS = {
     TOPIC_ROBOT_TASK_STATUS,
 }
 _MAX_RETAINED_RESPONSES = 64
+_MANUAL_CONTROL_HEARTBEAT_INTERVAL = 0.1
+_MAX_MANUAL_CONTROL_COMMAND = 10
+_MAX_MANUAL_CONTROL_PULSE_SECONDS = 0.5
+_POINT_NAVI_PRODUCTION_EXPLORE_MODE = 2
 
 
 def _is_response_message(message: NarwalMessage) -> bool:
@@ -201,6 +283,23 @@ def _base_status_working_status(decoded: dict[str, Any] | object) -> WorkingStat
         return None
 
 
+def _base_status_telecontrol_status(
+    decoded: dict[str, Any] | object,
+) -> int | None:
+    """Extract an explicitly encoded RobotTaskStatus field 3.19."""
+    if not isinstance(decoded, dict):
+        return None
+    field3 = decoded.get("3")
+    if isinstance(field3, list):
+        field3 = field3[0] if field3 else None
+    if not isinstance(field3, dict) or "19" not in field3:
+        return None
+    value = field3["19"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def _base_status_confirms_docked(
     decoded: dict[str, Any] | object, status: WorkingStatus | None
 ) -> bool:
@@ -294,6 +393,26 @@ class NarwalClient:
         )
         # Lock to prevent concurrent send_command calls from racing on the queue
         self._command_lock = asyncio.Lock()
+        # Keep config/set and its mandatory config/get readback atomic with
+        # respect to other writes made through this client.
+        self._config_write_lock = asyncio.Lock()
+        # A schedule toggle is a read-modify-write operation.  Keep its
+        # mandatory fresh read and full readback together so concurrent
+        # callers cannot overwrite one another with stale schedule fields.
+        self._schedule_write_lock = asyncio.Lock()
+        # Serialize client-owned motion so cleanup cannot race another pulse or
+        # point-navigation request.
+        self._telecontrol_lock = asyncio.Lock()
+        self._manual_control_abort = asyncio.Event()
+        self._manual_control_active = False
+        self._point_navigation_active = False
+        self._point_navigation_seen_active = False
+        self._point_navigation_start_pending = False
+        self._point_navigation_completed_before_ack = False
+        self._manual_control_state = int(ManualControlMode.OFF)
+        self._telecontrol_status = int(TelecontrolStatus.UNSPECIFIED)
+        self._telecontrol_stop_generation = 0
+        self._point_navigation_path: tuple[tuple[float, float], ...] = ()
 
     def _full_topic(self, short_topic: str) -> str:
         """Build the full topic path."""
@@ -308,6 +427,36 @@ class NarwalClient:
     def robot_awake(self) -> bool:
         """Return True if the robot is actively broadcasting."""
         return self._robot_awake
+
+    @property
+    def manual_control_active(self) -> bool:
+        """Return whether this client currently owns a joystick pulse."""
+        return self._manual_control_active
+
+    @property
+    def point_navigation_active(self) -> bool:
+        """Return whether this client owns an uncancelled point navigation."""
+        return self._point_navigation_active
+
+    @property
+    def manual_control_state(self) -> int:
+        """Return the last RobotBaseStatus.manualControlStatus value."""
+        return self._manual_control_state
+
+    @property
+    def telecontrol_status(self) -> int:
+        """Return the last explicit RobotTaskStatus.telecontrolStatus value."""
+        return self._telecontrol_status
+
+    @property
+    def telecontrol_stop_generation(self) -> int:
+        """Return the generation incremented synchronously by public stops."""
+        return self._telecontrol_stop_generation
+
+    @property
+    def point_navigation_path(self) -> tuple[tuple[float, float], ...]:
+        """Return the last schema-decoded point-navigation trajectory."""
+        return self._point_navigation_path
 
     @property
     def last_broadcast_age(self) -> float:
@@ -368,11 +517,52 @@ class NarwalClient:
                 self.state.last_active_working_status_time
             )
 
+    def _clear_point_navigation_ownership(self) -> None:
+        """Clear every client-owned point-navigation overlay."""
+        self._point_navigation_active = False
+        self._point_navigation_seen_active = False
+        self._point_navigation_start_pending = False
+        self._point_navigation_completed_before_ack = False
+        self._point_navigation_path = ()
+        self.state.point_navigation_path = []
+        self.state.point_navigation_target = None
+
+    def _update_observed_telecontrol_state(
+        self, decoded: dict[str, Any]
+    ) -> None:
+        """Synchronize explicit base-status telecontrol fields and lifecycle."""
+        manual_control_state = decoded.get("31")
+        if isinstance(manual_control_state, int) and not isinstance(
+            manual_control_state, bool
+        ):
+            self._manual_control_state = manual_control_state
+            self.state.manual_control_state = manual_control_state
+
+        telecontrol_status = _base_status_telecontrol_status(decoded)
+        if telecontrol_status is None:
+            return
+        self._telecontrol_status = telecontrol_status
+        self.state.telecontrol_status = telecontrol_status
+        if telecontrol_status == int(TelecontrolStatus.POINT_NAVI):
+            if (
+                self._point_navigation_active
+                or self._point_navigation_start_pending
+            ):
+                self._point_navigation_seen_active = True
+            return
+        if not self._point_navigation_seen_active:
+            return
+        if self._point_navigation_active:
+            self._clear_point_navigation_ownership()
+        elif self._point_navigation_start_pending:
+            self._point_navigation_completed_before_ack = True
+
     def _update_from_base_status_broadcast(
         self, decoded: dict[str, Any], now: float | None = None
     ) -> None:
         """Update state from robot_base_status, ignoring stale dock overlays mid-task."""
         now = time.monotonic() if now is None else now
+        self._update_observed_telecontrol_state(decoded)
         base_status = _base_status_working_status(decoded)
         signature = (decoded.get("3"), decoded.get("11"), decoded.get("47"))
         if signature != self._last_base_status_log:
@@ -405,6 +595,18 @@ class NarwalClient:
         if now - self._last_aux_log_time.get(short_topic, 0.0) > 30.0:
             self._last_aux_log_time[short_topic] = now
             _LOGGER.debug("%s decoded status: %s", short_topic, _short_repr(decoded))
+
+    def _update_point_navigation_trajectory(self, payload: bytes) -> None:
+        """Decode and retain the schema-backed planned path."""
+        try:
+            trajectory = decode_point_navi_plan_traj(payload)
+        except TelecontrolCodecError as err:
+            _LOGGER.debug("Invalid point-navigation trajectory: %s", err)
+            return
+        self._point_navigation_path = tuple(
+            (point.x, point.y) for point in trajectory.points
+        )
+        self.state.point_navigation_path = list(self._point_navigation_path)
 
     async def connect(self) -> None:
         """Establish WebSocket connection to the vacuum.
@@ -595,6 +797,18 @@ class NarwalClient:
     async def disconnect(self) -> None:
         """Disconnect from the vacuum and stop all tasks."""
         self._should_reconnect = False
+        if self.connected and (
+            self._manual_control_active
+            or self._point_navigation_active
+            or self._point_navigation_start_pending
+            or self._telecontrol_lock.locked()
+        ):
+            try:
+                await self.emergency_stop_telecontrol()
+            except Exception:
+                _LOGGER.exception(
+                    "Telecontrol cleanup failed before WebSocket disconnect"
+                )
         self._listener_active = False
         self._robot_awake = False
         self._connected.clear()
@@ -697,6 +911,8 @@ class NarwalClient:
         # Decode protobuf and update state based on topic
         short_topic = msg.short_topic
         _LOGGER.debug("Broadcast topic: %s (tag=0x%02x)", short_topic, msg.field_tag)
+        if short_topic == TOPIC_POINT_NAVI_PLAN_TRAJ:
+            self._update_point_navigation_trajectory(msg.payload)
         try:
             decoded = self._decode_protobuf(msg.payload)
         except Exception:
@@ -1120,6 +1336,8 @@ class NarwalClient:
         short_topic: str,
         payload: bytes = b"",
         timeout: float = COMMAND_RESPONSE_TIMEOUT,
+        *,
+        before_send: Callable[[], None] | None = None,
     ) -> CommandResponse:
         """Send a command and wait for the field5 response.
 
@@ -1130,6 +1348,8 @@ class NarwalClient:
             short_topic: Command topic without prefix/device_id.
             payload: Protobuf-encoded payload (empty for most commands).
             timeout: Seconds to wait for response.
+            before_send: Optional synchronous safety check run while holding
+                the command lock, immediately before the frame is emitted.
 
         Returns:
             CommandResponse with result code and decoded data.
@@ -1143,6 +1363,8 @@ class NarwalClient:
 
         async with self._command_lock:
             self._discard_pre_command_responses()
+            if before_send is not None:
+                before_send()
 
             full_topic = self._full_topic(short_topic)
             frame = build_frame(full_topic, payload)
@@ -1228,6 +1450,8 @@ class NarwalClient:
 
             # Process broadcast messages while waiting
             short_topic = msg.short_topic
+            if short_topic == TOPIC_POINT_NAVI_PLAN_TRAJ:
+                self._update_point_navigation_trajectory(msg.payload)
             try:
                 decoded = self._decode_protobuf(msg.payload)
             except Exception:
@@ -1268,6 +1492,65 @@ class NarwalClient:
         frame = build_frame(topic, payload, header_byte)
         await self._ws.send(frame)
         _LOGGER.debug("Sent raw to topic: %s (%d bytes)", topic, len(frame))
+
+    async def _publish_command(self, short_topic: str, payload: bytes) -> None:
+        """Publish a command which intentionally has no response topic."""
+        await self.send_raw(self._full_topic(short_topic), payload)
+
+    @staticmethod
+    def _command_performed(response: CommandResponse) -> bool:
+        """Return whether an APK ServiceResult reports perform-success."""
+        return (
+            response.result_known
+            and response.result_code == CommandResult.SUCCESS
+        )
+
+    async def _wait_for_manual_control_state(
+        self,
+        expected: int,
+        *,
+        timeout: float = 2.0,
+    ) -> bool:
+        """Wait for RobotBaseStatus.manualControlStatus (field 31)."""
+        if self._manual_control_state == expected:
+            return True
+
+        deadline = time.monotonic() + timeout
+        if self._listener_active:
+            while time.monotonic() < deadline:
+                if self._manual_control_state == expected:
+                    return True
+                await asyncio.sleep(0.05)
+            return self._manual_control_state == expected
+
+        if not self.connected:
+            return False
+
+        # Without the persistent listener, temporarily own recv() and process
+        # broadcasts until the mode state arrives.
+        async with self._command_lock:
+            while time.monotonic() < deadline:
+                if self._manual_control_state == expected:
+                    return True
+                remaining = deadline - time.monotonic()
+                try:
+                    data = await asyncio.wait_for(
+                        self._ws.recv(),
+                        timeout=min(remaining, 0.1),
+                    )
+                except TimeoutError:
+                    continue
+                if not isinstance(data, bytes) or len(data) < 4:
+                    continue
+                try:
+                    message = parse_frame(data)
+                except ProtocolError:
+                    continue
+                if _is_response_message(message):
+                    self._retain_response(message)
+                    continue
+                await self._handle_message(data)
+        return self._manual_control_state == expected
 
     # --- High-level commands ---
 
@@ -1888,6 +2171,50 @@ class NarwalClient:
         )
         return snapshot
 
+    async def set_config_patch(
+        self,
+        patch: SetConfigPatch,
+    ) -> ConfigSnapshot:
+        """Write one setting and require an exact immediate readback.
+
+        A transport-level response is not sufficient evidence of persistence.
+        The write fails closed unless ``config/set`` returns a known success
+        and the following ``config/get`` contains the requested typed value.
+        """
+        payload = encode_set_config_patch(patch)
+        async with self._config_write_lock:
+            response = await self.send_command(
+                TOPIC_CMD_SET_CONFIG,
+                payload=payload,
+            )
+            if not self._command_performed(response):
+                if response.result_known:
+                    detail = f"result code {response.result_code}"
+                else:
+                    detail = "an unconfirmed response"
+                raise NarwalCommandError(
+                    f"config/set failed with {detail}"
+                )
+
+            snapshot = await self.get_config()
+            if patch.field not in snapshot.values:
+                raise NarwalCommandError(
+                    "config/set readback omitted requested field "
+                    f"{patch.field.name}"
+                )
+
+            readback = snapshot.values[patch.field]
+            if (
+                type(readback) is not type(patch.value)
+                or readback != patch.value
+            ):
+                raise NarwalCommandError(
+                    "config/set readback mismatch for "
+                    f"{patch.field.name}: requested {patch.value!r}, "
+                    f"received {readback!r}"
+                )
+            return snapshot
+
     async def get_status(self, full_update: bool = True) -> CommandResponse:
         """Query current device base status.
 
@@ -1922,6 +2249,7 @@ class NarwalClient:
                 status_data,
             )
             if full_update:
+                self._update_observed_telecontrol_state(status_data)
                 self.state.update_from_base_status(status_data)
             else:
                 self.state.update_battery_from_base_status(status_data)
@@ -1942,6 +2270,153 @@ class NarwalClient:
             len(task.items),
         )
         return task
+
+    async def get_current_clean_plan(self) -> CurrentPlanResponse:
+        """Query and cache the current official-app cleaning plan."""
+        resp = await self.send_command(TOPIC_CMD_GET_CURRENT_CLEAN_PLAN)
+        result = decode_current_plan_response(resp.data)
+        self.state.current_clean_plan = result.plan
+        return result
+
+    async def get_clean_plans(self) -> CleanPlansResponse:
+        """Query and cache every saved official-app cleaning plan."""
+        resp = await self.send_command(TOPIC_CMD_GET_CLEAN_PLANS)
+        result = decode_clean_plans_response(resp.data)
+        self.state.clean_plans = result.plans
+        return result
+
+    async def get_clean_schedules(self) -> GetCleanSchedulesResponse:
+        """Query and cache all cleaning schedules without changing them."""
+        resp = await self.send_command(TOPIC_CMD_GET_CLEAN_SCHEDULES)
+        result = decode_get_clean_schedules_response(resp.raw_payload)
+        self.state.clean_schedules = result.clean_schedules
+        return result
+
+    async def set_clean_schedule_enabled(
+        self,
+        task_id: int,
+        enabled: bool,
+    ) -> GetCleanSchedulesResponse:
+        """Toggle one existing schedule with a fresh, verified transaction."""
+        if type(task_id) is not int or not 0 <= task_id <= (1 << 32) - 1:
+            raise ValueError("task_id must be a uint32")
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+
+        async with self._schedule_write_lock:
+            # Never use the cached inventory as a mutation source.  The
+            # official app can update any schedule field while Home Assistant
+            # is connected, and encoding stale fields would silently undo it.
+            inventory = await self.get_clean_schedules()
+            schedule = next(
+                (
+                    candidate
+                    for candidate in inventory.clean_schedules
+                    if candidate.task_id == task_id
+                ),
+                None,
+            )
+            if (
+                schedule is None
+                or schedule.clean_schedule_param is None
+                or schedule.clean_schedule_param.crontab is None
+            ):
+                raise NarwalCommandError(
+                    f"Schedule {task_id} is missing or has no editable crontab"
+                )
+
+            updated_crontab = replace(
+                schedule.clean_schedule_param.crontab,
+                enabled=enabled,
+            )
+            updated_parameter = replace(
+                schedule.clean_schedule_param,
+                crontab=updated_crontab,
+            )
+            updated_schedule = replace(
+                schedule,
+                clean_schedule_param=updated_parameter,
+            )
+            payload = encode_update_clean_schedule_request(
+                UpdateCleanScheduleRequest(clean_schedule=updated_schedule)
+            )
+            response = await self.send_command(
+                TOPIC_CMD_UPDATE_CLEAN_SCHEDULE,
+                payload=payload,
+            )
+            update_result = decode_update_clean_schedule_response(
+                response.raw_payload
+            )
+            if (
+                update_result.error_code is None
+                or update_result.error_code.code is not ScheduleError.SUCCESS
+            ):
+                raise NarwalCommandError(
+                    f"Schedule {task_id} update was not confirmed"
+                )
+
+            readback_inventory = await self.get_clean_schedules()
+            readback = next(
+                (
+                    candidate
+                    for candidate in readback_inventory.clean_schedules
+                    if candidate.task_id == task_id
+                ),
+                None,
+            )
+            # Dataclass equality deliberately compares every decoded known and
+            # unknown field.  The only permitted difference from the freshly
+            # fetched schedule was already captured in ``updated_schedule``.
+            if readback != updated_schedule:
+                raise NarwalCommandError(
+                    f"Schedule {task_id} readback did not match the full update"
+                )
+            return readback_inventory
+
+    async def get_consumable_info(self) -> GetConsumableInfoResponse:
+        """Query and cache locally advertised maintenance/replacement categories."""
+        resp = await self.send_command(TOPIC_CMD_GET_CONSUMABLE_INFO)
+        result = decode_get_consumable_info_response(resp.raw_payload)
+        self.state.consumable_info = result.consumable_info
+        return result
+
+    async def get_firmware_metadata(self) -> FirmwareVersionResponse:
+        """Query and cache the full read-only firmware component inventory."""
+        resp = await self.send_command(TOPIC_CMD_GET_FIRMWARE_VERSION)
+        result = decode_get_firmware_version_response(resp.raw_payload)
+        self.state.firmware_metadata = result
+        return result
+
+    async def get_language_metadata(self) -> GetLanguageResponse:
+        """Query and cache the robot's configured spoken language."""
+        resp = await self.send_command(TOPIC_CMD_GET_LANGUAGE)
+        result = decode_get_language_response(resp.raw_payload)
+        self.state.configured_language = result
+        return result
+
+    async def get_supported_languages(self) -> GetSupportedLanguagesResponse:
+        """Query and cache every language advertised by the robot."""
+        resp = await self.send_command(TOPIC_CMD_GET_SUPPORTED_LANGUAGES)
+        result = decode_get_supported_languages_response(resp.raw_payload)
+        self.state.supported_languages = result
+        return result
+
+    async def get_current_voice_info(self) -> GetCurrentVoiceInfoResponse:
+        """Query and cache current official-app voice-package metadata."""
+        resp = await self.send_command(TOPIC_CMD_GET_CURRENT_VOICE_INFO)
+        result = decode_get_current_voice_info_response(resp.raw_payload)
+        self.state.current_voice_info = result
+        return result
+
+    async def get_clean_timeline(self) -> GetCleanTimeLineResponse:
+        """Query and cache the official app's complete local task timeline."""
+        resp = await self.send_command(
+            TOPIC_CMD_GET_CLEAN_TIMELINE,
+            payload=encode_get_clean_time_line_request(),
+        )
+        result = decode_get_clean_time_line_response(resp.data)
+        self.state.clean_timeline = result
+        return result
 
     async def get_clean_progress_info(self) -> CommandResponse:
         """Query active clean progress information."""
@@ -1977,6 +2452,493 @@ class NarwalClient:
     async def get_all_maps(self) -> CommandResponse:
         """Download all saved/reduced maps."""
         return await self.send_command(TOPIC_CMD_GET_ALL_MAPS, timeout=15.0)
+
+    async def get_saved_maps(self) -> GetAllReducedMapsResponse:
+        """Query and cache the strict saved/reduced map inventory."""
+        resp = await self.get_all_maps()
+        product_key = (
+            self.state.device_info.product_key
+            if self.state.device_info is not None
+            else ""
+        )
+        result = decode_get_all_reduced_maps_response(
+            resp.data,
+            product_key=product_key,
+        )
+        self.state.saved_maps = result.maps
+        self.state.saved_maps_fetched = True
+        return result
+
+    async def get_editable_map(
+        self,
+        map_id: int | None = None,
+        *,
+        include_carpet: bool = True,
+        include_floor_plan: bool = True,
+        request_format: MapRequestFormat = MapRequestFormat.COMPRESSED_GRID,
+    ) -> GetEditableMapResponse:
+        """Query and cache editable geometry for one map without changing it."""
+        if map_id is None and self.state.map_data is not None:
+            map_id = self.state.map_data.map_id
+        request = GetEditableMapRequest(
+            map_id=map_id,
+            include_carpet=include_carpet,
+            include_floor_plan=include_floor_plan,
+            request_format=request_format,
+        )
+        resp = await self.send_command(
+            TOPIC_CMD_GET_EDITABLE_MAP,
+            payload=encode_get_editable_map_request(request),
+            timeout=15.0,
+        )
+        product_key = (
+            self.state.device_info.product_key
+            if self.state.device_info is not None
+            else ""
+        )
+        result = decode_get_editable_map_response(
+            resp.data,
+            product_key=product_key,
+        )
+        self.state.editable_map = result
+        self.state.editable_map_fetched = True
+        return result
+
+    async def check_map_update_info(self) -> CheckMapUpdateInfoResponse:
+        """Check and cache whether the official app reports map updates."""
+        resp = await self.send_command(
+            TOPIC_CMD_CHECK_MAP_UPDATE_INFO,
+            timeout=15.0,
+        )
+        product_key = (
+            self.state.device_info.product_key
+            if self.state.device_info is not None
+            else ""
+        )
+        result = decode_check_map_update_info_response(
+            resp.data,
+            product_key=product_key,
+        )
+        self.state.map_update_info = result
+        self.state.map_update_info_fetched = True
+        return result
+
+    async def set_manual_control_mode(
+        self,
+        mode: ManualControlMode | int,
+    ) -> CommandResponse:
+        """Send the low-level manual-control mode command.
+
+        Motion callers should normally use :meth:`manual_control_pulse`, which
+        confirms JOYSTICK state and guarantees the dead-man cleanup sequence.
+        """
+        mode = ManualControlMode(mode)
+        return await self.send_command(
+            TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+            payload=encode_set_manual_control_mode(int(mode)),
+            timeout=10.0,
+        )
+
+    def _require_telecontrol_generation(
+        self, expected_generation: int
+    ) -> None:
+        """Reject motion invalidated by a public stop during preflight."""
+        if expected_generation != self._telecontrol_stop_generation:
+            raise NarwalCommandError(
+                "Telecontrol request was invalidated by a stop command"
+            )
+
+    def _raise_if_telecontrol_lock_held(self) -> None:
+        """Reject rather than queue a second motion operation."""
+        if self._telecontrol_lock.locked():
+            raise NarwalCommandError(
+                "Another telecontrol operation is already in progress"
+            )
+
+    def _raise_if_command_lock_held(self) -> None:
+        """Reject motion which would queue behind an unrelated command."""
+        if self._command_lock.locked():
+            raise NarwalCommandError(
+                "Another robot command is already in progress"
+            )
+
+    async def start_point_navigation(
+        self,
+        x: float,
+        y: float,
+        *,
+        theta: float = 0.0,
+        expected_generation: int | None = None,
+    ) -> CommandResponse:
+        """Start the production app's one-point navigation request.
+
+        Coordinates must already be in the robot's raw map/world coordinate
+        space. Map revision and traversability checks belong to the caller.
+        """
+        generation = (
+            self._telecontrol_stop_generation
+            if expected_generation is None
+            else expected_generation
+        )
+        payload = encode_point_navi_request(
+            avoid_carpet_mask=0,
+            explore_mode=_POINT_NAVI_PRODUCTION_EXPLORE_MODE,
+            points=(
+                PoseData(
+                    location=Point(x=x, y=y),
+                    theta=theta,
+                ),
+            ),
+        )
+        if (
+            self._manual_control_active
+            or self._manual_control_state != int(ManualControlMode.OFF)
+        ):
+            raise NarwalCommandError(
+                "Manual control is already active; stop it before navigation"
+            )
+        if (
+            self._point_navigation_active
+            or self._telecontrol_status
+            == int(TelecontrolStatus.POINT_NAVI)
+        ):
+            raise NarwalCommandError(
+                "Point navigation is already active; cancel it first"
+            )
+        self._require_telecontrol_generation(generation)
+        self._raise_if_command_lock_held()
+        self._raise_if_telecontrol_lock_held()
+        async with self._telecontrol_lock:
+            self._require_telecontrol_generation(generation)
+            self._raise_if_command_lock_held()
+            self._point_navigation_seen_active = False
+            self._point_navigation_start_pending = True
+            self._point_navigation_completed_before_ack = False
+            try:
+                response = await self.send_command(
+                    TOPIC_CMD_POINT_NAVI,
+                    payload=payload,
+                    timeout=10.0,
+                    before_send=lambda: self._require_telecontrol_generation(
+                        generation
+                    ),
+                )
+            except BaseException:
+                self._clear_point_navigation_ownership()
+                raise
+            finally:
+                self._point_navigation_start_pending = False
+            try:
+                self._require_telecontrol_generation(generation)
+            except BaseException:
+                self._clear_point_navigation_ownership()
+                raise
+            self._point_navigation_active = (
+                self._command_performed(response)
+                and not self._point_navigation_completed_before_ack
+            )
+            if self._point_navigation_active:
+                self._point_navigation_path = ()
+                self.state.point_navigation_path = []
+                self.state.point_navigation_target = (x, y)
+            else:
+                self._clear_point_navigation_ownership()
+            return response
+
+    async def point_navigate(
+        self,
+        x: float,
+        y: float,
+        *,
+        theta: float = 0.0,
+    ) -> CommandResponse:
+        """Compatibility alias for :meth:`start_point_navigation`."""
+        return await self.start_point_navigation(x, y, theta=theta)
+
+    async def _cancel_point_navigation_locked(self) -> CommandResponse:
+        """Cancel navigation while the caller owns the telecontrol lock."""
+        try:
+            return await self.send_command(
+                TOPIC_CMD_CANCEL,
+                payload=encode_cancel_navigation_request(),
+                timeout=10.0,
+            )
+        finally:
+            self._clear_point_navigation_ownership()
+
+    async def cancel_point_navigation(self) -> CommandResponse:
+        """Cancel point navigation with CancelTaskType.NAVI (3)."""
+        self._telecontrol_stop_generation += 1
+        async with self._telecontrol_lock:
+            return await self._cancel_point_navigation_locked()
+
+    async def stop_point_navigation(self) -> CommandResponse:
+        """Compatibility alias for :meth:`cancel_point_navigation`."""
+        return await self.cancel_point_navigation()
+
+    async def _publish_zero_velocity_locked(
+        self,
+        repeats: int = 3,
+    ) -> list[Exception]:
+        """Publish repeated zero velocity while holding the motion lock."""
+        failures: list[Exception] = []
+        payload = encode_telecontrol_velocity(0, 0)
+        for index in range(repeats):
+            try:
+                await self._publish_command(
+                    TOPIC_CMD_VELOCITY_CONTROL,
+                    payload,
+                )
+            except Exception as err:
+                failures.append(err)
+            if index + 1 < repeats:
+                await asyncio.sleep(_MANUAL_CONTROL_HEARTBEAT_INTERVAL)
+        return failures
+
+    async def _publish_emergency_stop_frames(self) -> list[Exception]:
+        """Publish unacknowledged safety frames without waiting on command locks."""
+        zero_velocity = encode_telecontrol_velocity(0, 0)
+        frames = [
+            (TOPIC_CMD_CANCEL, encode_cancel_navigation_request()),
+            *[
+                (TOPIC_CMD_VELOCITY_CONTROL, zero_velocity)
+                for _ in range(3)
+            ],
+            (
+                TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+                encode_set_manual_control_mode(int(ManualControlMode.OFF)),
+            ),
+        ]
+        failures: list[Exception] = []
+        for topic, payload in frames:
+            try:
+                await self._publish_command(topic, payload)
+            except Exception as err:
+                failures.append(err)
+        return failures
+
+    async def _stop_manual_control_locked(self) -> None:
+        """Best-effort triple-zero and OFF sequence under the motion lock."""
+        failures = await self._publish_zero_velocity_locked()
+        try:
+            response = await self.send_command(
+                TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+                payload=encode_set_manual_control_mode(
+                    int(ManualControlMode.OFF)
+                ),
+                timeout=10.0,
+            )
+            if not self._command_performed(response):
+                failures.append(
+                    NarwalCommandError(
+                        "Robot did not acknowledge manual-control OFF"
+                    )
+                )
+            elif not await self._wait_for_manual_control_state(
+                int(ManualControlMode.OFF)
+            ):
+                failures.append(
+                    NarwalCommandError(
+                        "Robot did not report manual-control OFF"
+                    )
+                )
+        except Exception as err:
+            failures.append(err)
+        finally:
+            self._manual_control_active = False
+
+        if failures:
+            detail = "; ".join(
+                f"{type(err).__name__}: {err}" for err in failures
+            )
+            raise NarwalCommandError(
+                "Manual-control cleanup was not fully confirmed: "
+                f"{detail}"
+            )
+
+    async def manual_control_pulse(
+        self,
+        linear_velocity: int,
+        angular_velocity: int,
+        *,
+        duration: float = 0.25,
+        expected_generation: int | None = None,
+    ) -> CommandResponse:
+        """Send a bounded dead-man joystick pulse, then triple-zero and OFF."""
+        generation = (
+            self._telecontrol_stop_generation
+            if expected_generation is None
+            else expected_generation
+        )
+        if isinstance(linear_velocity, bool) or not isinstance(
+            linear_velocity, int
+        ):
+            raise TypeError("linear_velocity must be an integer")
+        if isinstance(angular_velocity, bool) or not isinstance(
+            angular_velocity, int
+        ):
+            raise TypeError("angular_velocity must be an integer")
+        if not -_MAX_MANUAL_CONTROL_COMMAND <= linear_velocity <= (
+            _MAX_MANUAL_CONTROL_COMMAND
+        ):
+            raise ValueError(
+                "linear_velocity must be between -10 and 10"
+            )
+        if not -_MAX_MANUAL_CONTROL_COMMAND <= angular_velocity <= (
+            _MAX_MANUAL_CONTROL_COMMAND
+        ):
+            raise ValueError(
+                "angular_velocity must be between -10 and 10"
+            )
+        if linear_velocity == 0 and angular_velocity == 0:
+            raise ValueError(
+                "At least one velocity component must be non-zero"
+            )
+        if isinstance(duration, bool) or not isinstance(
+            duration, (int, float)
+        ):
+            raise TypeError("duration must be a real number")
+        duration = float(duration)
+        if not 0 < duration <= _MAX_MANUAL_CONTROL_PULSE_SECONDS:
+            raise ValueError(
+                "duration must be greater than 0 and at most 0.5 seconds"
+            )
+
+        if (
+            self._manual_control_active
+            or self._manual_control_state != int(ManualControlMode.OFF)
+        ):
+            raise NarwalCommandError(
+                "Manual control is already active; stop it before another pulse"
+            )
+        if (
+            self._point_navigation_active
+            or self._telecontrol_status
+            == int(TelecontrolStatus.POINT_NAVI)
+        ):
+            raise NarwalCommandError(
+                "Point navigation is already active; cancel it before driving"
+            )
+        self._require_telecontrol_generation(generation)
+        self._raise_if_command_lock_held()
+        self._raise_if_telecontrol_lock_held()
+        async with self._telecontrol_lock:
+            self._require_telecontrol_generation(generation)
+            self._raise_if_command_lock_held()
+            self._manual_control_abort.clear()
+            primary_error: BaseException | None = None
+            try:
+                response = await self.send_command(
+                    TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+                    payload=encode_set_manual_control_mode(
+                        int(ManualControlMode.JOYSTICK)
+                    ),
+                    timeout=10.0,
+                    before_send=lambda: self._require_telecontrol_generation(
+                        generation
+                    ),
+                )
+                self._require_telecontrol_generation(generation)
+                if not self._command_performed(response):
+                    return response
+                if not await self._wait_for_manual_control_state(
+                    int(ManualControlMode.JOYSTICK)
+                ):
+                    raise NarwalCommandError(
+                        "Robot acknowledged joystick mode but did not report it"
+                    )
+
+                self._manual_control_active = True
+                velocity_payload = encode_telecontrol_velocity(
+                    linear_velocity,
+                    angular_velocity,
+                )
+                deadline = time.monotonic() + duration
+                while (
+                    time.monotonic() < deadline
+                    and not self._manual_control_abort.is_set()
+                ):
+                    await self._publish_command(
+                        TOPIC_CMD_VELOCITY_CONTROL,
+                        velocity_payload,
+                    )
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    try:
+                        await asyncio.wait_for(
+                            self._manual_control_abort.wait(),
+                            timeout=min(
+                                _MANUAL_CONTROL_HEARTBEAT_INTERVAL,
+                                remaining,
+                            ),
+                        )
+                    except TimeoutError:
+                        continue
+                return response
+            except BaseException as err:
+                primary_error = err
+                raise
+            finally:
+                try:
+                    await self._stop_manual_control_locked()
+                except Exception:
+                    if primary_error is None:
+                        raise
+                    _LOGGER.exception(
+                        "Manual-control cleanup failed after pulse error"
+                    )
+
+    async def send_velocity(
+        self,
+        linear: int,
+        angular: int,
+        *,
+        duration: float = 0.25,
+    ) -> CommandResponse:
+        """Compatibility alias for the bounded dead-man pulse."""
+        return await self.manual_control_pulse(
+            linear,
+            angular,
+            duration=duration,
+        )
+
+    async def emergency_stop_telecontrol(self) -> None:
+        """Abort client-owned telecontrol and request both OFF and NAVI cancel."""
+        self._telecontrol_stop_generation += 1
+        self._manual_control_abort.set()
+        raw_failures = await self._publish_emergency_stop_frames()
+        if raw_failures:
+            _LOGGER.debug(
+                "Immediate telecontrol safety publish had %d failure(s); "
+                "continuing with acknowledged cleanup",
+                len(raw_failures),
+            )
+        failures: list[Exception] = []
+        async with self._telecontrol_lock:
+            try:
+                response = await self._cancel_point_navigation_locked()
+                if not self._command_performed(response):
+                    failures.append(
+                        NarwalCommandError(
+                            "Robot did not acknowledge navigation cancel"
+                        )
+                    )
+            except Exception as err:
+                failures.append(err)
+            try:
+                await self._stop_manual_control_locked()
+            except Exception as err:
+                failures.append(err)
+
+        if failures:
+            detail = "; ".join(
+                f"{type(err).__name__}: {err}" for err in failures
+            )
+            raise NarwalCommandError(
+                "Telecontrol emergency stop was not fully confirmed: "
+                f"{detail}"
+            )
 
     async def take_picture(self) -> bytes | None:
         """Capture a photo from the robot's camera.

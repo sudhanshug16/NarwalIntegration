@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TypeAlias
 
 import voluptuous as vol
@@ -26,30 +27,34 @@ from .const import (
     CONF_PRODUCT_KEY,
     DOMAIN,
     PLATFORMS,
-    SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
+    SERVICE_CLEAN_ROOMS,
+    SERVICE_DRIVE,
+    SERVICE_GO_TO,
+    SERVICE_SET_SCHEDULE_ENABLED,
+    SERVICE_STOP_NAVIGATION,
+    SERVICE_STOP_TELECONTROL,
 )
-from .coordinator import NarwalCoordinator
+from .coordinator import NarwalCoordinator, active_telecontrol_reason
 from .narwal_client import (
+    Capability,
     CleaningRoute,
     CommandResult,
     FanLevel,
+    ManualControlMode,
     MopHumidity,
     MopStrengthLevel,
+    NarwalCommandError,
     NarwalConnectionError,
+    TelecontrolStatus,
+    WorkingStatus,
     WorkMode,
+    capability_enabled,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 NarwalConfigEntry: TypeAlias = ConfigEntry[NarwalCoordinator]
 
-
-async def _async_options_updated(
-    hass: HomeAssistant,
-    entry: NarwalConfigEntry,
-) -> None:
-    """Reload entities after guarded-write options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 FIELD_ROOMS = "rooms"
 FIELD_MODE = "mode"
@@ -58,7 +63,14 @@ FIELD_WATER = "water"
 FIELD_MOP_STRENGTH = "mop_strength"
 FIELD_PASSES = "passes"
 FIELD_ROUTE = "route"
-FIELD_CONFIRM_UNVERIFIED = "confirm_unverified"
+FIELD_LINEAR_VELOCITY = "linear_velocity"
+FIELD_ANGULAR_VELOCITY = "angular_velocity"
+FIELD_DURATION_MS = "duration_ms"
+FIELD_NORMALIZED_X = "x"
+FIELD_NORMALIZED_Y = "y"
+FIELD_MAP_REVISION = "map_revision"
+FIELD_SCHEDULE_TASK_ID = "task_id"
+FIELD_ENABLED = "enabled"
 
 WORK_MODE_OPTIONS: dict[str, WorkMode] = {
     "vacuum": WorkMode.VACUUM,
@@ -100,9 +112,110 @@ CLEAN_ROOMS_SCHEMA = vol.Schema(
         vol.Optional(FIELD_MOP_STRENGTH, default="normal"): vol.In(MOP_STRENGTH_OPTIONS),
         vol.Optional(FIELD_PASSES, default=1): vol.All(vol.Coerce(int), vol.Range(min=1, max=3)),
         vol.Optional(FIELD_ROUTE): vol.In(ROUTE_OPTIONS),
-        vol.Required(FIELD_CONFIRM_UNVERIFIED): bool,
     }
 )
+
+
+def _normalized_coordinate(value: object) -> float:
+    """Validate a normalized map-image coordinate in the half-open [0, 1) range."""
+    if isinstance(value, bool):
+        raise vol.Invalid("coordinate must be a real number")
+    try:
+        coordinate = float(value)
+    except (TypeError, ValueError) as err:
+        raise vol.Invalid("coordinate must be a real number") from err
+    if not math.isfinite(coordinate) or not 0 <= coordinate < 1:
+        raise vol.Invalid("coordinate must be finite and between 0 (inclusive) and 1 (exclusive)")
+    return coordinate
+
+
+def _strict_boolean(value: object) -> bool:
+    """Accept only a real boolean for state-changing schedule calls."""
+    if type(value) is not bool:
+        raise vol.Invalid("enabled must be true or false")
+    return value
+
+
+def _bounded_integer(
+    value: object,
+    *,
+    name: str,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Validate a bounded integer without silently truncating numeric input."""
+    if type(value) is int:
+        parsed = value
+    elif type(value) is float and math.isfinite(value) and value.is_integer():
+        parsed = int(value)
+    elif type(value) is str:
+        try:
+            parsed = int(value.strip(), 10)
+        except ValueError as err:
+            raise vol.Invalid(f"{name} must be an integer") from err
+    else:
+        raise vol.Invalid(f"{name} must be an integer")
+    if not minimum <= parsed <= maximum:
+        raise vol.Invalid(
+            f"{name} must be between {minimum} and {maximum}"
+        )
+    return parsed
+
+
+TELECONTROL_TARGET_SCHEMA = {
+    vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
+    vol.Optional(ATTR_DEVICE_ID): cv.ensure_list,
+    vol.Optional(ATTR_AREA_ID): cv.ensure_list,
+}
+
+DRIVE_SCHEMA = vol.Schema(
+    {
+        **TELECONTROL_TARGET_SCHEMA,
+        vol.Required(FIELD_LINEAR_VELOCITY): lambda value: _bounded_integer(
+            value,
+            name=FIELD_LINEAR_VELOCITY,
+            minimum=-10,
+            maximum=10,
+        ),
+        vol.Required(FIELD_ANGULAR_VELOCITY): lambda value: _bounded_integer(
+            value,
+            name=FIELD_ANGULAR_VELOCITY,
+            minimum=-10,
+            maximum=10,
+        ),
+        vol.Optional(FIELD_DURATION_MS, default=250): lambda value: _bounded_integer(
+            value,
+            name=FIELD_DURATION_MS,
+            minimum=100,
+            maximum=500,
+        ),
+    }
+)
+
+GO_TO_SCHEMA = vol.Schema(
+    {
+        **TELECONTROL_TARGET_SCHEMA,
+        vol.Required(FIELD_NORMALIZED_X): _normalized_coordinate,
+        vol.Required(FIELD_NORMALIZED_Y): _normalized_coordinate,
+        vol.Required(FIELD_MAP_REVISION): str,
+    }
+)
+
+STOP_TELECONTROL_SCHEMA = vol.Schema(TELECONTROL_TARGET_SCHEMA)
+
+SET_SCHEDULE_ENABLED_SCHEMA = vol.Schema(
+    {
+        **TELECONTROL_TARGET_SCHEMA,
+        vol.Required(FIELD_SCHEDULE_TASK_ID): lambda value: _bounded_integer(
+            value,
+            name=FIELD_SCHEDULE_TASK_ID,
+            minimum=0,
+            maximum=(1 << 32) - 1,
+        ),
+        vol.Required(FIELD_ENABLED): _strict_boolean,
+    }
+)
+
 
 def _normalise_room_ids(raw_rooms: list) -> list[int]:
     """Return room IDs from HA service data."""
@@ -216,33 +329,143 @@ async def _async_validate_clean_rooms_targets(
     return vacuum_entity_ids
 
 
+async def _async_single_narwal_coordinator(
+    hass: HomeAssistant,
+    call,
+) -> NarwalCoordinator:
+    """Resolve and authorize exactly one Narwal vacuum target."""
+    entity_ids = list(await service.async_extract_entity_ids(call))
+    if not entity_ids and any(
+        key in call.data for key in (ATTR_ENTITY_ID, ATTR_DEVICE_ID, ATTR_AREA_ID)
+    ):
+        raise HomeAssistantError("Target does not contain a Narwal entity")
+    entity_ids = await _async_validate_clean_rooms_targets(hass, call, entity_ids)
+    coordinators = await _async_get_service_coordinators(hass, entity_ids)
+    if len(coordinators) != 1:
+        raise HomeAssistantError("Target exactly one Narwal vacuum")
+    return coordinators[0]
+
+
+async def _async_single_telecontrol_coordinator(
+    hass: HomeAssistant,
+    call,
+) -> NarwalCoordinator:
+    """Resolve, authorize, and capability-check one Narwal vacuum target."""
+    coordinator = await _async_single_narwal_coordinator(hass, call)
+    if not coordinator.telecontrol_enabled:
+        raise HomeAssistantError(
+            "Telecontrol is not available for this model and advertised capability set"
+        )
+    return coordinator
+
+
+async def _async_prepare_motion(coordinator: NarwalCoordinator) -> None:
+    """Refresh state and reject motion while another robot task owns movement."""
+    client = coordinator.client
+    try:
+        if not client.robot_awake:
+            await client.wake(timeout=10.0)
+        await client.get_status(full_update=True)
+    except Exception as err:
+        raise HomeAssistantError(
+            "Could not confirm the robot's current state"
+        ) from err
+
+    state = client.state
+    if state.working_status in (WorkingStatus.UNKNOWN, WorkingStatus.ERROR):
+        raise HomeAssistantError(
+            f"Robot state does not permit telecontrol: {state.working_status.name}"
+        )
+    if (
+        state.is_cleaning
+        or state.is_paused_during_active_task
+        or state.is_returning
+    ):
+        raise HomeAssistantError(
+            "Stop the current cleaning or return-to-dock task before telecontrol"
+        )
+    if state.is_station_active:
+        raise HomeAssistantError(
+            "Wait for the base-station task to finish before telecontrol"
+        )
+    if (
+        client.manual_control_active
+        or client.manual_control_state != int(ManualControlMode.OFF)
+    ):
+        raise HomeAssistantError(
+            "Manual control is already active; call stop_telecontrol first"
+        )
+    if (
+        client.point_navigation_active
+        or client.telecontrol_status == int(TelecontrolStatus.POINT_NAVI)
+    ):
+        raise HomeAssistantError(
+            "Point navigation is already active; call stop_navigation first"
+        )
+
+
+def _exclusive_action_lock(
+    coordinator: NarwalCoordinator,
+    action: str,
+):
+    """Claim one physical action slot, translating its error for HA callers."""
+    try:
+        return coordinator.exclusive_action_lock(action)
+    except NarwalCommandError as err:
+        raise HomeAssistantError(str(err)) from err
+
+
+def _raise_for_command_result(action: str, response) -> None:
+    """Raise a Home Assistant error unless an action returned a known success."""
+    if not response.result_known:
+        raise HomeAssistantError(f"Narwal {action} returned an unconfirmed response")
+    if response.result_code == CommandResult.SUCCESS:
+        return
+    try:
+        result_name = CommandResult(response.result_code).name
+    except ValueError:
+        result_name = f"UNKNOWN({response.result_code})"
+    raise HomeAssistantError(
+        f"Narwal {action} failed: {result_name} ({response.result_code})"
+    )
+
+
 def _async_register_services(hass: HomeAssistant) -> None:
     """Register Narwal domain services."""
 
-    async def async_clean_rooms(call) -> None:
-        if call.data.get(FIELD_CONFIRM_UNVERIFIED) is not True:
-            raise HomeAssistantError(
-                "Set confirm_unverified to true for each supervised validation run"
-            )
-        entity_ids = list(await service.async_extract_entity_ids(call))
-        if not entity_ids and any(
-            key in call.data for key in (ATTR_ENTITY_ID, ATTR_DEVICE_ID, ATTR_AREA_ID)
-        ):
-            raise HomeAssistantError("Target does not contain a Narwal entity")
-        entity_ids = await _async_validate_clean_rooms_targets(hass, call, entity_ids)
-        coordinators = await _async_get_service_coordinators(
-            hass,
-            entity_ids,
-        )
-        for coordinator in coordinators:
-            if not coordinator.parameterized_clean_validation_enabled:
+    async def async_clean_rooms_for_coordinator(
+        coordinator: NarwalCoordinator,
+        call,
+    ) -> None:
+        """Run one room-clean start while owning the physical action slot."""
+        async with _exclusive_action_lock(coordinator, "start room cleaning"):
+            if not coordinator.parameterized_clean_enabled:
                 raise HomeAssistantError(
-                    "Unverified parameterized cleaning is not available for this "
-                    "exact model, firmware, and advertised capability set."
+                    "Parameterized cleaning is not available for this model "
+                    "and advertised capability set."
                 )
             client = coordinator.client
             if not client.robot_awake:
                 await client.wake(timeout=10.0)
+            try:
+                await client.get_status(full_update=True)
+            except Exception as err:
+                raise HomeAssistantError(
+                    "Could not confirm the robot state before room cleaning"
+                ) from err
+            if client.state.is_station_active:
+                raise HomeAssistantError(
+                    "Wait for the base-station task to finish before room cleaning"
+                )
+            if reason := active_telecontrol_reason(client):
+                raise HomeAssistantError(reason)
+            if FIELD_ROUTE in call.data and not capability_enabled(
+                client.state.capabilities,
+                Capability.OVERLAP_ADJUST,
+            ):
+                raise HomeAssistantError(
+                    "Cleaning route selection is not advertised by this robot"
+                )
             room_ids = await _async_room_ids_for_coordinator(
                 coordinator,
                 call.data[FIELD_ROOMS],
@@ -284,11 +507,188 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 )
             coordinator.async_set_updated_data(client.state)
 
+    async def async_clean_rooms(call) -> None:
+        entity_ids = list(await service.async_extract_entity_ids(call))
+        if not entity_ids and any(
+            key in call.data for key in (ATTR_ENTITY_ID, ATTR_DEVICE_ID, ATTR_AREA_ID)
+        ):
+            raise HomeAssistantError("Target does not contain a Narwal entity")
+        entity_ids = await _async_validate_clean_rooms_targets(hass, call, entity_ids)
+        coordinators = await _async_get_service_coordinators(
+            hass,
+            entity_ids,
+        )
+        for coordinator in coordinators:
+            await async_clean_rooms_for_coordinator(coordinator, call)
+
+    async def async_drive_for_coordinator(
+        coordinator: NarwalCoordinator,
+        call,
+    ) -> None:
+        """Run one bounded drive pulse while holding the physical action slot."""
+        async with _exclusive_action_lock(coordinator, "drive the robot"):
+            client = coordinator.client
+            stop_generation = client.telecontrol_stop_generation
+            await _async_prepare_motion(coordinator)
+            if client.state.is_docked:
+                raise HomeAssistantError(
+                    "Joystick driving is blocked while the robot is on its dock; "
+                    "use Go to for autonomous navigation"
+                )
+            linear_velocity = call.data[FIELD_LINEAR_VELOCITY]
+            angular_velocity = call.data[FIELD_ANGULAR_VELOCITY]
+            if linear_velocity == 0 and angular_velocity == 0:
+                raise HomeAssistantError(
+                    "At least one joystick velocity component must be non-zero"
+                )
+            try:
+                response = await client.manual_control_pulse(
+                    linear_velocity,
+                    angular_velocity,
+                    duration=call.data[FIELD_DURATION_MS] / 1000,
+                    expected_generation=stop_generation,
+                )
+            except Exception as err:
+                raise HomeAssistantError(
+                    "Narwal joystick pulse failed; the client attempted its dead-man stop"
+                ) from err
+            _raise_for_command_result("joystick pulse", response)
+            coordinator.async_set_updated_data(coordinator.client.state)
+
+    async def async_drive(call) -> None:
+        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        await async_drive_for_coordinator(coordinator, call)
+
+    async def async_go_to_for_coordinator(
+        coordinator: NarwalCoordinator,
+        call,
+    ) -> None:
+        """Run one point-navigation request while holding the action slot."""
+        async with _exclusive_action_lock(coordinator, "start point navigation"):
+            client = coordinator.client
+            stop_generation = client.telecontrol_stop_generation
+            await _async_prepare_motion(coordinator)
+            try:
+                await client.get_map()
+            except Exception as err:
+                raise HomeAssistantError(
+                    "Could not refresh the map before navigation"
+                ) from err
+            map_data = client.state.map_data
+            if map_data is None:
+                raise HomeAssistantError("No active Narwal map is available")
+            current_revision = map_data.navigation_revision()
+            if current_revision is None:
+                raise HomeAssistantError(
+                    "The active map does not contain valid navigation geometry"
+                )
+            if call.data[FIELD_MAP_REVISION] != current_revision:
+                raise HomeAssistantError(
+                    "The map changed after this destination was selected; "
+                    "refresh the map and choose the point again"
+                )
+            normalized_x = call.data[FIELD_NORMALIZED_X]
+            normalized_y = call.data[FIELD_NORMALIZED_Y]
+            grid = map_data.image_to_grid_cell(
+                normalized_x * map_data.width,
+                normalized_y * map_data.height,
+            )
+            destination = map_data.normalized_image_to_world(
+                normalized_x,
+                normalized_y,
+            )
+            if grid is None or destination is None:
+                raise HomeAssistantError("Destination is outside the active map")
+            if not map_data.is_navigation_target_clear(
+                *grid,
+                clearance_cells=1,
+                reject_furniture=True,
+            ):
+                raise HomeAssistantError(
+                    "Destination is not a clear mapped floor point"
+                )
+            try:
+                response = await client.start_point_navigation(
+                    *destination,
+                    expected_generation=stop_generation,
+                )
+            except Exception as err:
+                raise HomeAssistantError("Narwal point navigation failed") from err
+            _raise_for_command_result("point navigation", response)
+            coordinator.async_set_updated_data(client.state)
+
+    async def async_go_to(call) -> None:
+        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        await async_go_to_for_coordinator(coordinator, call)
+
+    async def async_stop_navigation(call) -> None:
+        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        try:
+            response = await coordinator.client.cancel_point_navigation()
+        except Exception as err:
+            raise HomeAssistantError(
+                "Narwal point-navigation stop failed"
+            ) from err
+        _raise_for_command_result("point-navigation stop", response)
+        coordinator.async_set_updated_data(coordinator.client.state)
+
+    async def async_stop_telecontrol(call) -> None:
+        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        try:
+            await coordinator.client.emergency_stop_telecontrol()
+        except Exception as err:
+            raise HomeAssistantError(
+                "Narwal emergency stop was not fully confirmed"
+            ) from err
+        coordinator.async_set_updated_data(coordinator.client.state)
+
+    async def async_set_schedule_enabled(call) -> None:
+        coordinator = await _async_single_narwal_coordinator(hass, call)
+        try:
+            await coordinator.async_set_schedule_enabled(
+                call.data[FIELD_SCHEDULE_TASK_ID],
+                call.data[FIELD_ENABLED],
+            )
+        except Exception as err:
+            raise HomeAssistantError(
+                "Narwal schedule enabled-state update was not confirmed"
+            ) from err
+
     hass.services.async_register(
         DOMAIN,
-        SERVICE_VALIDATE_PARAMETERIZED_CLEAN,
+        SERVICE_CLEAN_ROOMS,
         async_clean_rooms,
         schema=CLEAN_ROOMS_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DRIVE,
+        async_drive,
+        schema=DRIVE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GO_TO,
+        async_go_to,
+        schema=GO_TO_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP_NAVIGATION,
+        async_stop_navigation,
+        schema=STOP_TELECONTROL_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP_TELECONTROL,
+        async_stop_telecontrol,
+        schema=STOP_TELECONTROL_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_SCHEDULE_ENABLED,
+        async_set_schedule_enabled,
+        schema=SET_SCHEDULE_ENABLED_SCHEMA,
     )
 
 
@@ -328,7 +728,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: NarwalConfigEntry) -> bo
         ) from err
 
     entry.runtime_data = coordinator
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     data = _domain_data(hass)
     data[entry.entry_id] = coordinator
 

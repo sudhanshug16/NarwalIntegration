@@ -6,11 +6,9 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.core import callback
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from .const import (
-    CONF_ENABLE_EXPERIMENTAL_CLEANING,
     CONF_MODEL,
     CONF_PRODUCT_KEY,
     DEFAULT_PORT,
@@ -36,12 +34,6 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Narwal vacuum."""
 
     VERSION = 2
-
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry) -> NarwalOptionsFlow:
-        """Return the options flow for guarded experimental commands."""
-        return NarwalOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -123,31 +115,4 @@ class NarwalConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
-        )
-
-
-class NarwalOptionsFlow(OptionsFlow):
-    """Configure features that have not been validated on every model."""
-
-    async def async_step_init(
-        self,
-        user_input: dict[str, Any] | None = None,
-    ) -> ConfigFlowResult:
-        """Require an explicit opt-in before exposing unvalidated writes."""
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_ENABLE_EXPERIMENTAL_CLEANING,
-                        default=self.config_entry.options.get(
-                            CONF_ENABLE_EXPERIMENTAL_CLEANING,
-                            False,
-                        ),
-                    ): bool,
-                }
-            ),
         )

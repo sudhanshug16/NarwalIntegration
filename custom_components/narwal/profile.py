@@ -1,9 +1,4 @@
-"""Model and firmware validation profiles for Narwal operations.
-
-Capability bits describe what firmware advertises.  They are necessary but not
-sufficient evidence that a write is safe: write paths additionally require a
-model/firmware profile backed by a live validation record.
-"""
+"""Model profiles for Narwal operations."""
 
 from __future__ import annotations
 
@@ -23,82 +18,145 @@ _PRODUCT_MODELS: dict[str, tuple[str, str]] = {
     "3rIGshGNAj": ("Narwal Freo X Plus", "BX1"),
 }
 
-# No exact product-key/firmware capture has yet been tied to a completed
-# physical validation record. Keep the normal entity surface closed until one
-# is recorded; an app-derived schema alone is not a safety claim.
-_VALIDATED_PARAMETERIZED_CLEAN: frozenset[tuple[str, str]] = frozenset()
-
-# The APK and our AX15 read-only probe used this exact firmware. Opt-in permits
-# only parameterized room-clean validation; it does not authorize station,
-# config, pump, firmware, map-mutation, media, or telecontrol writes.
-_EXPERIMENTAL_X10_CLEAN_FIRMWARE = "v01.03.10.03"
-
 
 @dataclass(frozen=True, slots=True)
 class DeviceProfile:
-    """Resolved identity, capabilities, and validation state."""
+    """Resolved identity and advertised capabilities."""
 
     product_key: str
     firmware_version: str
     display_model: str
     hardware_model: str
     capabilities: CapabilityMap
-    experimental_cleaning: bool = False
-
-    @property
-    def parameterized_clean_validated(self) -> bool:
-        """Return whether CleanTask writes were live-validated."""
-        return (
-            self.product_key,
-            self.firmware_version,
-        ) in _VALIDATED_PARAMETERIZED_CLEAN
-
-    @property
-    def parameterized_clean_experimental(self) -> bool:
-        """Return whether this exact AX15 probe profile was explicitly opted in."""
-        return (
-            self.experimental_cleaning
-            and self.product_key == FREO_X10_PRO_PRODUCT_KEY
-            and self.firmware_version == _EXPERIMENTAL_X10_CLEAN_FIRMWARE
-        )
 
     @property
     def parameterized_clean_enabled(self) -> bool:
-        """Gate normal CleanTask entities to physically validated profiles."""
-        return capability_enabled(
+        """Expose full clean parameters on capable Freo X10 Pro robots."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
             self.capabilities,
             Capability.MULTI_ZONE_CLEAN,
-        ) and self.parameterized_clean_validated
+        )
 
     @property
-    def parameterized_clean_validation_enabled(self) -> bool:
-        """Allow the one-shot AX15 validation service after explicit opt-in."""
-        return capability_enabled(
+    def telecontrol_enabled(self) -> bool:
+        """Expose bounded official-app telecontrol on capable AX15 robots."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
             self.capabilities,
-            Capability.MULTI_ZONE_CLEAN,
-        ) and self.parameterized_clean_experimental
+            Capability.TELECONTROL_HEARTBEAT,
+        )
 
     @property
     def station_actions(self) -> frozenset[str]:
-        """Return station actions validated for this exact profile.
-
-        No station write has yet passed the required X10/Flow 2 physical
-        validation record, so these entities remain absent.
-        """
-        return frozenset()
+        """Return normal dock actions exposed for Freo X10 Pro."""
+        if self.product_key != FREO_X10_PRO_PRODUCT_KEY:
+            return frozenset()
+        return frozenset(
+            {
+                "empty_dustbin",
+                "wash_mop",
+                "dry_mop",
+                "wash_and_dry_mop",
+                "dry_dust_bag",
+                "dry_station_bag",
+            }
+        )
 
     @property
     def config_writes_enabled(self) -> bool:
-        """Config writes stay read-only until read/write/read-back validation."""
-        return False
+        """Expose verified config writes on capable AX15 robots."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.UPLOAD_CONFIGURATION,
+        )
+
+    @property
+    def clean_plan_inventory_enabled(self) -> bool:
+        """Return whether saved/current clean-plan reads match the AX15 surface."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.MULTIMAP_CUSTOM_CLEAN_ORDER_CONFIGURE,
+        )
+
+    @property
+    def schedule_inventory_enabled(self) -> bool:
+        """Return whether this AX15 advertises either modern schedule feature."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and (
+            capability_enabled(
+                self.capabilities,
+                Capability.SCHEDULED_TASK_EXECUTE_ONCE,
+            )
+            or capability_enabled(
+                self.capabilities,
+                Capability.CONFIGURABLE_CYCLE_SCHEDULE_TASK,
+            )
+        )
+
+    @property
+    def saved_map_inventory_enabled(self) -> bool:
+        """Return whether the device advertises multiple saved maps."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.MULTI_MAP,
+        )
+
+    @property
+    def editable_map_inventory_enabled(self) -> bool:
+        """Return whether the device advertises editable floor-plan metadata."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.FLOOR_PLAN_EDIT,
+        )
+
+    @property
+    def map_update_inventory_enabled(self) -> bool:
+        """Return whether supplementary map-update reads are advertised."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.APP_UPDATE_MAP,
+        )
+
+    @property
+    def consumable_inventory_enabled(self) -> bool:
+        """Return whether the AX15 advertises its consumables surface."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.CONSUMABLES_ON_CLOUD,
+        )
+
+    @property
+    def firmware_inventory_enabled(self) -> bool:
+        """Return whether the AX15 advertises component firmware reads."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.GET_FIRMWARE_VERSION,
+        )
+
+    @property
+    def language_inventory_enabled(self) -> bool:
+        """Return whether the AX15 advertises language metadata."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.OPERATE_LANGUAGE,
+        )
+
+    @property
+    def voice_inventory_enabled(self) -> bool:
+        """Return whether the AX15 advertises official voice-package metadata."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY and capability_enabled(
+            self.capabilities,
+            Capability.SET_CUSTOM_VOICE,
+        )
+
+    @property
+    def history_inventory_enabled(self) -> bool:
+        """Return whether the APK-proven local timeline applies to this model."""
+        return self.product_key == FREO_X10_PRO_PRODUCT_KEY
 
 
 def profile_for_client(
     client: Any,
-    *,
-    experimental_cleaning: bool = False,
 ) -> DeviceProfile:
-    """Resolve a fail-closed profile from live client identity and features."""
+    """Resolve a profile from live client identity and features."""
     state = client.state
     info = state.device_info
     product_key = ""
@@ -121,7 +179,6 @@ def profile_for_client(
         display_model=display_model,
         hardware_model=hardware_model,
         capabilities=state.capabilities,
-        experimental_cleaning=experimental_cleaning,
     )
 
 

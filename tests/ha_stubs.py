@@ -8,6 +8,7 @@ can be imported and tested in isolation.
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
@@ -31,6 +32,7 @@ def install() -> None:
 
     # --- voluptuous (HA dependency, not in our test requirements) ---
     vol = _mod("voluptuous")
+    vol.Invalid = type("Invalid", (ValueError,), {})  # type: ignore[attr-defined]
     vol.Schema = MagicMock()  # type: ignore[attr-defined]
     vol.Required = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
     vol.Optional = MagicMock(side_effect=lambda *a, **kw: a[0] if a else "key")  # type: ignore[attr-defined]
@@ -55,6 +57,22 @@ def install() -> None:
     ha_const.ATTR_DEVICE_ID = "device_id"  # type: ignore[attr-defined]
     ha_const.ATTR_ENTITY_ID = "entity_id"  # type: ignore[attr-defined]
     ha_const.Platform = MagicMock()  # type: ignore[attr-defined]
+    ha_const.PERCENTAGE = "%"  # type: ignore[attr-defined]
+
+    class _EntityCategory:
+        CONFIG = "config"
+        DIAGNOSTIC = "diagnostic"
+
+    ha_const.EntityCategory = _EntityCategory  # type: ignore[attr-defined]
+
+    class _UnitOfArea:
+        SQUARE_METERS = "m²"
+
+    class _UnitOfTime:
+        SECONDS = "s"
+
+    ha_const.UnitOfArea = _UnitOfArea  # type: ignore[attr-defined]
+    ha_const.UnitOfTime = _UnitOfTime  # type: ignore[attr-defined]
 
     # homeassistant.core
     ha_core = _mod("homeassistant.core", ha)
@@ -155,6 +173,10 @@ def install() -> None:
         def _handle_coordinator_update(self) -> None:
             pass
 
+        @property
+        def available(self) -> bool:
+            return bool(getattr(self.coordinator, "last_update_success", True))
+
     ha_uc.CoordinatorEntity = _CoordinatorEntity  # type: ignore[attr-defined]
 
     ha_dr = _mod("homeassistant.helpers.device_registry", ha_helpers)
@@ -222,14 +244,101 @@ def install() -> None:
 
     ha_vac.VacuumEntityFeature = _VacuumEntityFeature  # type: ignore[attr-defined]
 
+    @dataclass(frozen=True, kw_only=True)
+    class _SensorEntityDescription:
+        key: str
+        translation_key: str | None = None
+        device_class: object | None = None
+        native_unit_of_measurement: object | None = None
+        state_class: object | None = None
+        options: list[str] | None = None
+        entity_category: object | None = None
+
+    class _SensorEntity:
+        """Stub for SensorEntity."""
+
+    class _SensorDeviceClass:
+        BATTERY = "battery"
+        DURATION = "duration"
+        ENUM = "enum"
+
+    class _SensorStateClass:
+        MEASUREMENT = "measurement"
+
     ha_sensor = _mod("homeassistant.components.sensor", ha_comp)
-    ha_sensor.SensorEntity = MagicMock  # type: ignore[attr-defined]
-    ha_sensor.SensorDeviceClass = MagicMock  # type: ignore[attr-defined]
-    ha_sensor.SensorStateClass = MagicMock  # type: ignore[attr-defined]
+    ha_sensor.SensorEntity = _SensorEntity  # type: ignore[attr-defined]
+    ha_sensor.SensorEntityDescription = _SensorEntityDescription  # type: ignore[attr-defined]
+    ha_sensor.SensorDeviceClass = _SensorDeviceClass  # type: ignore[attr-defined]
+    ha_sensor.SensorStateClass = _SensorStateClass  # type: ignore[attr-defined]
 
     ha_bs = _mod("homeassistant.components.binary_sensor", ha_comp)
     ha_bs.BinarySensorEntity = MagicMock  # type: ignore[attr-defined]
     ha_bs.BinarySensorDeviceClass = MagicMock  # type: ignore[attr-defined]
+
+    @dataclass(frozen=True, kw_only=True)
+    class _SelectEntityDescription:
+        key: str
+        translation_key: str | None = None
+        entity_category: object | None = None
+
+    class _SelectEntity:
+        """Stub for SelectEntity."""
+
+        @property
+        def options(self) -> list[str] | tuple[str, ...]:
+            return getattr(self, "_attr_options", ())
+
+    ha_select = _mod("homeassistant.components.select", ha_comp)
+    ha_select.SelectEntity = _SelectEntity  # type: ignore[attr-defined]
+    ha_select.SelectEntityDescription = _SelectEntityDescription  # type: ignore[attr-defined]
+
+    @dataclass(frozen=True, kw_only=True)
+    class _SwitchEntityDescription:
+        key: str
+        translation_key: str | None = None
+        entity_category: object | None = None
+
+    class _SwitchEntity:
+        """Stub for SwitchEntity."""
+
+    ha_switch = _mod("homeassistant.components.switch", ha_comp)
+    ha_switch.SwitchEntity = _SwitchEntity  # type: ignore[attr-defined]
+    ha_switch.SwitchEntityDescription = _SwitchEntityDescription  # type: ignore[attr-defined]
+
+    class _NumberEntity:
+        """Stub for NumberEntity."""
+
+    class _NumberMode:
+        SLIDER = "slider"
+        BOX = "box"
+
+    ha_number = _mod("homeassistant.components.number", ha_comp)
+    ha_number.NumberEntity = _NumberEntity  # type: ignore[attr-defined]
+    ha_number.NumberMode = _NumberMode  # type: ignore[attr-defined]
+
+    @dataclass(frozen=True, kw_only=True)
+    class _ButtonEntityDescription:
+        key: str
+        translation_key: str | None = None
+        entity_category: object | None = None
+
+    class _ButtonEntity:
+        """Stub for ButtonEntity."""
+
+    ha_button = _mod("homeassistant.components.button", ha_comp)
+    ha_button.ButtonEntity = _ButtonEntity  # type: ignore[attr-defined]
+    ha_button.ButtonEntityDescription = _ButtonEntityDescription  # type: ignore[attr-defined]
+
+    ha_restore = _mod("homeassistant.helpers.restore_state", ha_helpers)
+
+    class _RestoreEntity:
+        async def async_added_to_hass(self) -> None:
+            pass
+
+        async def async_get_last_state(self) -> object | None:
+            return None
+
+    ha_restore.RestoreEntity = _RestoreEntity  # type: ignore[attr-defined]
 
     ha_cam = _mod("homeassistant.components.camera", ha_comp)
 

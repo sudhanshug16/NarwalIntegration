@@ -76,6 +76,17 @@ TOPIC_CMD_GET_DEVICE_INFO = "common/get_device_info"
 TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
 TOPIC_CMD_GET_CONFIG = "config/get"
+TOPIC_CMD_SET_CONFIG = "config/set"
+TOPIC_CMD_GET_CURRENT_CLEAN_PLAN = "clean/cur_plan/get"
+TOPIC_CMD_GET_CLEAN_PLANS = "clean/plan/get"
+TOPIC_CMD_GET_CLEAN_SCHEDULES = "schedule/clean_schedule/get"
+TOPIC_CMD_UPDATE_CLEAN_SCHEDULE = "schedule/clean_schedule/update"
+TOPIC_CMD_GET_CONSUMABLE_INFO = "consumable/get_consumable_info"
+TOPIC_CMD_GET_FIRMWARE_VERSION = "common/upgrade/get_firmware_version"
+TOPIC_CMD_GET_LANGUAGE = "config/language/get"
+TOPIC_CMD_GET_SUPPORTED_LANGUAGES = "config/supported_languages/get"
+TOPIC_CMD_GET_CURRENT_VOICE_INFO = "config/language/get_current_voice_info"
+TOPIC_CMD_GET_CLEAN_TIMELINE = "info/get_clean_time_line"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"
@@ -107,6 +118,13 @@ TOPIC_CMD_GET_ROBOT_TASK_STATUS = "robot/task/status/get"
 # Map
 TOPIC_CMD_GET_MAP = "map/get_map"
 TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
+TOPIC_CMD_GET_EDITABLE_MAP = "map/get_editable_map"
+TOPIC_CMD_CHECK_MAP_UPDATE_INFO = "map/check_map_update_info"
+
+# Telecontrol
+TOPIC_CMD_SET_MANUAL_CONTROL_MODE = "telecontrol/set_manual_control_mode"
+TOPIC_CMD_VELOCITY_CONTROL = "telecontrol/velocity_control"
+TOPIC_CMD_POINT_NAVI = "telecontrol/point_navi"
 
 # Camera (developer commands)
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
@@ -157,6 +175,28 @@ class CommandResult(IntEnum):
     NOT_APPLICABLE = 2  # e.g., set_fan_level when not cleaning
     CONFLICT = 3  # e.g., recall when already recalling
     NOT_READY = 4  # clean/start_clean while not docked (robot in STANDBY)
+
+
+class ManualControlMode(IntEnum):
+    """Official app manual-control modes."""
+
+    OFF = 0
+    JOYSTICK = 1
+    CLEAN_DEFAULT = 2
+    SWEEP_MUTE = 3
+    SWEEP_NORMAL = 4
+    SWEEP_STRONG = 5
+    SWEEP_DEEP = 6
+    SWEEP_SUPER = 7
+
+
+class TelecontrolStatus(IntEnum):
+    """RobotTaskStatus field 19 telecontrol state."""
+
+    UNSPECIFIED = 0
+    JOYSTICK = 1
+    CLEAN_DEFAULT = 2
+    POINT_NAVI = 3
 
 
 class WorkingStatus(IntEnum):

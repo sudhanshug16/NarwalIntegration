@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connect to Narwal Vacuum",
-        "description": "Enter the IP address of your Narwal robot vacuum.",
+        "description": "Enter the IP address of your Narwal robot vacuum and select your model.",
         "data": {
           "host": "IP Address",
-          "port": "Port"
+          "port": "Port",
+          "model": "Model"
         }
       }
     },
@@ -16,17 +17,6 @@
     },
     "abort": {
       "already_configured": "This vacuum is already configured."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Advanced Narwal controls",
-        "description": "This exposes only the supervised AX15 parameterized-clean validation service on the exact probed firmware. Every service call also requires a confirmation flag. It does not enable station, configuration, map, camera, pump, firmware, or normal automation writes.",
-        "data": {
-          "enable_experimental_cleaning": "Enable experimental parameterized cleaning for this exact model and firmware"
-        }
-      }
     }
   },
   "entity": {
@@ -76,6 +66,24 @@
       "protocol_profile": {
         "name": "Protocol profile"
       },
+      "clean_plans": {
+        "name": "Cleaning plans"
+      },
+      "clean_schedules": {
+        "name": "Cleaning schedules"
+      },
+      "consumable_categories": {
+        "name": "Consumable categories"
+      },
+      "map_inventory": {
+        "name": "Map inventory"
+      },
+      "device_metadata": {
+        "name": "Firmware, language, and voice metadata"
+      },
+      "clean_timeline": {
+        "name": "Cleaning timeline"
+      },
       "charging_state": {
         "name": "Charging",
         "state": {
@@ -119,6 +127,63 @@
       },
       "show_furniture_labels": {
         "name": "Show furniture labels"
+      },
+      "child_lock": {
+        "name": "Child lock"
+      },
+      "clean_carpets": {
+        "name": "Clean carpets"
+      },
+      "smart_clean_detection": {
+        "name": "Smart clean detection"
+      },
+      "pet_mode": {
+        "name": "Pet mode"
+      },
+      "smart_deep_clean": {
+        "name": "Smart deep clean"
+      },
+      "moisture_proof_mop_pad": {
+        "name": "Moisture-proof mop pad"
+      },
+      "dust_collection": {
+        "name": "Dust collection"
+      },
+      "smart_dust_collection": {
+        "name": "Smart dust collection"
+      },
+      "return_to_main_map": {
+        "name": "Return to main map"
+      },
+      "quiet_dust_collection": {
+        "name": "Quiet dust collection"
+      },
+      "dry_robot_bag": {
+        "name": "Dry robot dust bag"
+      },
+      "hot_water_wash": {
+        "name": "Hot-water mop wash"
+      },
+      "massive_dirty_deep_clean": {
+        "name": "Massive-dirty deep clean"
+      },
+      "speech_control": {
+        "name": "Speech control"
+      },
+      "off_dock_auto_poweroff": {
+        "name": "Auto power-off away from dock"
+      },
+      "ai_voice_effects": {
+        "name": "AI voice effects"
+      },
+      "ai_waiting_effects": {
+        "name": "AI waiting effects"
+      },
+      "all_things_recognition": {
+        "name": "All-things recognition"
+      },
+      "precious_item_guard": {
+        "name": "Precious-item guard"
       }
     },
     "select": {
@@ -139,6 +204,44 @@
       },
       "passes": {
         "name": "Passes"
+      },
+      "robot_language": {
+        "name": "Robot language"
+      },
+      "dry_mop_strength": {
+        "name": "Mop drying strength"
+      },
+      "mop_wash_frequency": {
+        "name": "Mop wash frequency"
+      },
+      "carpet_behavior": {
+        "name": "Carpet behavior"
+      },
+      "station_clean_mode": {
+        "name": "Station cleaning mode"
+      },
+      "robot_clean_mode": {
+        "name": "Robot cleaning mode"
+      },
+      "obstacle_avoidance": {
+        "name": "Obstacle avoidance"
+      },
+      "corner_cleaning": {
+        "name": "Corner cleaning"
+      },
+      "carpet_clean_priority": {
+        "name": "Carpet cleaning priority"
+      },
+      "carpet_deep_clean": {
+        "name": "Carpet deep clean"
+      },
+      "station_light": {
+        "name": "Station light"
+      }
+    },
+    "number": {
+      "robot_volume": {
+        "name": "Robot volume"
       }
     },
     "button": {

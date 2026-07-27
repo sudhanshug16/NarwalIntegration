@@ -275,6 +275,34 @@ class TestRenderOverlay:
 
         assert img.getpixel(robot_px) == (0, 120, 255)
 
+    def test_navigation_path_and_target_are_rendered_at_grid_coordinates(self) -> None:
+        """Point navigation is visible as a purple path and destination marker."""
+        from PIL import Image
+
+        width, height = 30, 30
+        compressed = _make_room_grid(width, height, room_id=1)
+        base = render_base_map(compressed, width, height)
+        assert base is not None
+
+        png = render_overlay(
+            base,
+            height=height,
+            navigation_path=[(5.0, 5.0), (15.0, 15.0)],
+            navigation_target=(20.0, 20.0),
+        )
+        img = Image.open(io.BytesIO(png))
+        path_pixel = (
+            10 * DEFAULT_RENDER_SCALE,
+            (height - 1 - 10) * DEFAULT_RENDER_SCALE,
+        )
+        target_pixel = (
+            20 * DEFAULT_RENDER_SCALE,
+            (height - 1 - 20) * DEFAULT_RENDER_SCALE,
+        )
+
+        assert img.getpixel(path_pixel) == (190, 70, 255)
+        assert img.getpixel(target_pixel) == (190, 70, 255)
+
 
 class TestObstacleRendering:
     """Tests for obstacle rendering on base map."""

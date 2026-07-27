@@ -16,11 +16,7 @@ import tests.ha_stubs  # noqa: E402
 
 tests.ha_stubs.install()
 
-from custom_components.narwal.config_flow import (  # noqa: E402
-    NarwalConfigFlow,
-    NarwalOptionsFlow,
-)
-from custom_components.narwal.const import CONF_ENABLE_EXPERIMENTAL_CLEANING  # noqa: E402
+from custom_components.narwal.config_flow import NarwalConfigFlow  # noqa: E402
 from custom_components.narwal.narwal_client import NarwalConnectionError  # noqa: E402
 
 AbortFlow = sys.modules["homeassistant.data_entry_flow"].AbortFlow
@@ -163,36 +159,3 @@ class TestNarwalConfigFlow:
         entry_kwargs = flow.async_create_entry.call_args.kwargs
         assert entry_kwargs["data"]["product_key"] == "DrzDKQ0MU8"
         assert "Narwal DrzDKQ0MU8" in entry_kwargs["title"]
-
-
-class TestNarwalOptionsFlow:
-    """Experimental writes must require an explicit integration option."""
-
-    def _make_flow(self, enabled: bool = False) -> NarwalOptionsFlow:
-        flow = NarwalOptionsFlow.__new__(NarwalOptionsFlow)
-        flow.config_entry = MagicMock(
-            options={CONF_ENABLE_EXPERIMENTAL_CLEANING: enabled}
-        )
-        flow.async_show_form = MagicMock(return_value={"type": "form"})
-        flow.async_create_entry = MagicMock(return_value={"type": "create_entry"})
-        return flow
-
-    async def test_experimental_writes_default_to_off(self) -> None:
-        flow = self._make_flow()
-
-        await flow.async_step_init()
-
-        flow.async_show_form.assert_called_once()
-        assert flow.async_show_form.call_args.kwargs["step_id"] == "init"
-
-    async def test_explicit_opt_in_is_persisted(self) -> None:
-        flow = self._make_flow()
-
-        await flow.async_step_init(
-            {CONF_ENABLE_EXPERIMENTAL_CLEANING: True}
-        )
-
-        flow.async_create_entry.assert_called_once_with(
-            title="",
-            data={CONF_ENABLE_EXPERIMENTAL_CLEANING: True},
-        )

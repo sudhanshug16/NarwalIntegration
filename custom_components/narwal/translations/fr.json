@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connexion à l’aspirateur Narwal",
-        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal.",
+        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal et sélectionnez son modèle.",
         "data": {
           "host": "Adresse IP",
-          "port": "Port"
+          "port": "Port",
+          "model": "Modèle"
         }
       }
     },
@@ -16,17 +17,6 @@
     },
     "abort": {
       "already_configured": "Cet aspirateur est déjà configuré."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Contrôles Narwal avancés",
-        "description": "Cette option expose uniquement le service supervisé de validation du nettoyage paramétré AX15 sur le micrologiciel sondé. Chaque appel exige aussi une confirmation. Elle n'active aucune écriture de station, configuration, carte, caméra, pompe ou micrologiciel.",
-        "data": {
-          "enable_experimental_cleaning": "Activer le nettoyage paramétré expérimental pour ce modèle et ce micrologiciel"
-        }
-      }
     }
   },
   "entity": {
@@ -76,6 +66,24 @@
       "protocol_profile": {
         "name": "Profil du protocole"
       },
+      "clean_plans": {
+        "name": "Plans de nettoyage"
+      },
+      "clean_schedules": {
+        "name": "Programmes de nettoyage"
+      },
+      "consumable_categories": {
+        "name": "Catégories de consommables"
+      },
+      "map_inventory": {
+        "name": "Inventaire des cartes"
+      },
+      "device_metadata": {
+        "name": "Métadonnées du firmware, de la langue et de la voix"
+      },
+      "clean_timeline": {
+        "name": "Chronologie du nettoyage"
+      },
       "charging_state": {
         "name": "Charge",
         "state": {
@@ -119,6 +127,63 @@
       },
       "show_furniture_labels": {
         "name": "Afficher les noms des meubles"
+      },
+      "child_lock": {
+        "name": "Verrouillage enfant"
+      },
+      "clean_carpets": {
+        "name": "Nettoyer les tapis"
+      },
+      "smart_clean_detection": {
+        "name": "Détection de nettoyage intelligent"
+      },
+      "pet_mode": {
+        "name": "Mode animaux"
+      },
+      "smart_deep_clean": {
+        "name": "Nettoyage en profondeur intelligent"
+      },
+      "moisture_proof_mop_pad": {
+        "name": "Protection anti-humidité des serpillières"
+      },
+      "dust_collection": {
+        "name": "Collecte de la poussière"
+      },
+      "smart_dust_collection": {
+        "name": "Collecte intelligente de la poussière"
+      },
+      "return_to_main_map": {
+        "name": "Retour à la carte principale"
+      },
+      "quiet_dust_collection": {
+        "name": "Collecte silencieuse de la poussière"
+      },
+      "dry_robot_bag": {
+        "name": "Séchage du sac à poussière du robot"
+      },
+      "hot_water_wash": {
+        "name": "Lavage des serpillières à l’eau chaude"
+      },
+      "massive_dirty_deep_clean": {
+        "name": "Nettoyage en profondeur des saletés importantes"
+      },
+      "speech_control": {
+        "name": "Commande vocale"
+      },
+      "off_dock_auto_poweroff": {
+        "name": "Arrêt automatique hors station"
+      },
+      "ai_voice_effects": {
+        "name": "Effets vocaux IA"
+      },
+      "ai_waiting_effects": {
+        "name": "Effets d’attente IA"
+      },
+      "all_things_recognition": {
+        "name": "Reconnaissance de tous les objets"
+      },
+      "precious_item_guard": {
+        "name": "Protection des objets précieux"
       }
     },
     "select": {
@@ -139,6 +204,44 @@
       },
       "passes": {
         "name": "Passages"
+      },
+      "robot_language": {
+        "name": "Langue du robot"
+      },
+      "dry_mop_strength": {
+        "name": "Puissance de séchage des serpillières"
+      },
+      "mop_wash_frequency": {
+        "name": "Fréquence de lavage des serpillières"
+      },
+      "carpet_behavior": {
+        "name": "Comportement sur tapis"
+      },
+      "station_clean_mode": {
+        "name": "Mode de nettoyage de la station"
+      },
+      "robot_clean_mode": {
+        "name": "Mode de nettoyage du robot"
+      },
+      "obstacle_avoidance": {
+        "name": "Évitement des obstacles"
+      },
+      "corner_cleaning": {
+        "name": "Nettoyage des coins"
+      },
+      "carpet_clean_priority": {
+        "name": "Priorité de nettoyage des tapis"
+      },
+      "carpet_deep_clean": {
+        "name": "Nettoyage en profondeur des tapis"
+      },
+      "station_light": {
+        "name": "Éclairage de la station"
+      }
+    },
+    "number": {
+      "robot_volume": {
+        "name": "Volume du robot"
       }
     },
     "button": {

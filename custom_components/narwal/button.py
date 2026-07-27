@@ -11,7 +11,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import NarwalConfigEntry
-from .coordinator import NarwalCoordinator
+from .coordinator import NarwalCoordinator, active_telecontrol_reason
+from .dynamic_entities import setup_dynamic_entities
 from .entity import NarwalEntity
 from .narwal_client import (
     Capability,
@@ -54,7 +55,6 @@ BUTTON_DESCRIPTIONS: tuple[NarwalButtonEntityDescription, ...] = (
         translation_key="wash_and_dry_mop",
         action="wash_and_dry_mop",
         icon="mdi:creation",
-        entity_registry_enabled_default=False,
     ),
     NarwalButtonEntityDescription(
         key="dry_dust_bin",
@@ -80,14 +80,34 @@ async def async_setup_entry(
 ) -> None:
     """Set up Narwal button entities."""
     coordinator = entry.runtime_data
-    capabilities = coordinator.client.state.capabilities
-    allowed_actions = coordinator.device_profile.station_actions
-    async_add_entities(
-        NarwalActionButton(coordinator, description)
-        for description in BUTTON_DESCRIPTIONS
-        if description.action in allowed_actions
-        if description.required_feature is None
-        or capability_enabled(capabilities, description.required_feature)
+
+    def discover():
+        capabilities = coordinator.client.state.capabilities
+        allowed_actions = coordinator.device_profile.station_actions
+        for description in BUTTON_DESCRIPTIONS:
+            if description.action not in allowed_actions:
+                continue
+            if (
+                description.required_feature is not None
+                and not capability_enabled(
+                    capabilities,
+                    description.required_feature,
+                )
+            ):
+                continue
+            yield (
+                description.key,
+                lambda description=description: NarwalActionButton(
+                    coordinator,
+                    description,
+                ),
+            )
+
+    setup_dynamic_entities(
+        entry,
+        coordinator,
+        async_add_entities,
+        discover,
     )
 
 
@@ -126,43 +146,82 @@ class NarwalActionButton(NarwalEntity, ButtonEntity):
             and not capability_enabled(state.capabilities, feature)
         ):
             return False
-        return state.is_docked
+        return state.is_docked and not state.is_station_active
 
     async def async_press(self) -> None:
         """Run the Narwal station action."""
-        client = self.coordinator.client
-        if not client.robot_awake:
-            await client.wake(timeout=10.0)
-
-        command: Callable[[], Awaitable[CommandResponse]] = getattr(
-            client,
-            self.entity_description.action,
-        )
-        response = await command()
-        if (
-            self.entity_description.action == "wash_mop"
-            and response.not_applicable
-            and capability_enabled(
-                client.state.capabilities,
-                Capability.WASH_MOP_BY_ROBOT_STATUS,
-            )
-        ):
-            response = await client.wash_mop_by_robot_status()
-        if not response.result_known:
+        lock = self.coordinator.action_lock
+        if lock.locked():
             raise HomeAssistantError(
-                "Narwal response contained no action result code; "
-                "physical state is unconfirmed"
+                "Another Narwal action is already being started"
             )
-        if not response.success:
+
+        async with lock:
+            client = self.coordinator.client
+            if not client.robot_awake:
+                await client.wake(timeout=10.0)
             try:
-                result_name = CommandResult(response.result_code).name
-            except ValueError:
-                result_name = f"UNKNOWN({response.result_code})"
-            raise HomeAssistantError(
-                f"Narwal {self.entity_description.key} failed: {result_name}"
+                await client.get_status(full_update=True)
+            except Exception as err:
+                raise HomeAssistantError(
+                    "Could not confirm the robot and station are ready"
+                ) from err
+
+            state = client.state
+            if not state.is_docked:
+                raise HomeAssistantError(
+                    "Station actions require the robot to be docked"
+                )
+            if state.is_station_active:
+                raise HomeAssistantError(
+                    "Wait for the current station task to finish"
+                )
+            if reason := active_telecontrol_reason(client):
+                raise HomeAssistantError(reason)
+            if self.entity_description.action not in (
+                self.coordinator.device_profile.station_actions
+            ):
+                raise HomeAssistantError(
+                    "This station action is not available for the detected model"
+                )
+            feature = self.entity_description.required_feature
+            if feature is not None and not capability_enabled(
+                state.capabilities,
+                feature,
+            ):
+                raise HomeAssistantError(
+                    "This station action is not advertised by the robot"
+                )
+
+            command: Callable[[], Awaitable[CommandResponse]] = getattr(
+                client,
+                self.entity_description.action,
             )
+            response = await command()
+            if (
+                self.entity_description.action == "wash_mop"
+                and response.not_applicable
+                and capability_enabled(
+                    client.state.capabilities,
+                    Capability.WASH_MOP_BY_ROBOT_STATUS,
+                )
+            ):
+                response = await client.wash_mop_by_robot_status()
+            if not response.result_known:
+                raise HomeAssistantError(
+                    "Narwal response contained no action result code; "
+                    "physical state is unconfirmed"
+                )
+            if not response.success:
+                try:
+                    result_name = CommandResult(response.result_code).name
+                except ValueError:
+                    result_name = f"UNKNOWN({response.result_code})"
+                raise HomeAssistantError(
+                    f"Narwal {self.entity_description.key} failed: {result_name}"
+                )
 
-        if self.entity_description.action in ("dry_mop", "wash_and_dry_mop"):
-            await client.get_dry_mop_remain_time()
+            if self.entity_description.action in ("dry_mop", "wash_and_dry_mop"):
+                await client.get_dry_mop_remain_time()
 
-        self.coordinator.async_set_updated_data(client.state)
+            self.coordinator.async_set_updated_data(client.state)
