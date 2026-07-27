@@ -69,6 +69,17 @@ def test_camera_advertises_revision_of_cached_png_not_newer_client_map() -> None
     camera._cached_navigation_revision = "rendered-revision"
     camera._cached_map_width = 207
     camera._cached_map_height = 223
+    camera._cached_navigation_image_width = 828
+    camera._cached_navigation_image_height = 892
+    camera._cached_room_markers = (
+        {
+            "id": 4,
+            "name": "Kitchen",
+            "x": 0.25,
+            "y": 0.75,
+            "area_cells": 100,
+        },
+    )
     state = type(
         "State",
         (),
@@ -89,16 +100,24 @@ def test_camera_advertises_revision_of_cached_png_not_newer_client_map() -> None
     )()
     camera.coordinator = type("Coordinator", (), {"client": client})()
 
-    assert (
-        camera.extra_state_attributes["navigation_map_revision"]
-        == "rendered-revision"
-    )
+    assert camera.extra_state_attributes["navigation_map_revision"] == "rendered-revision"
     assert (
         state.map_data.navigation_revision()
         != camera.extra_state_attributes["navigation_map_revision"]
     )
     assert camera.extra_state_attributes["map_width"] == 207
     assert camera.extra_state_attributes["map_height"] == 223
+    assert camera.extra_state_attributes["navigation_image_width"] == 828
+    assert camera.extra_state_attributes["navigation_image_height"] == 892
+    assert camera.extra_state_attributes["room_markers"] == [
+        {
+            "id": 4,
+            "name": "Kitchen",
+            "x": 0.25,
+            "y": 0.75,
+            "area_cells": 100,
+        }
+    ]
 
 
 def test_coalesced_renders_keep_each_overlay_with_its_matching_base(
@@ -123,6 +142,17 @@ def test_coalesced_renders_keep_each_overlay_with_its_matching_base(
                 if func.__name__ == "render_overlay":
                     overlay_bases.append(args[0])
                     return b"png-" + args[0]
+                if func.__name__ == "room_markers":
+                    compressed_map = func.__self__.compressed_map
+                    return [
+                        {
+                            "id": 1,
+                            "name": compressed_map.decode(),
+                            "x": 0.5,
+                            "y": 0.5,
+                            "area_cells": 1,
+                        }
+                    ]
                 raise AssertionError(f"unexpected renderer: {func.__name__}")
 
             def async_create_task(self, coroutine):
@@ -134,6 +164,10 @@ def test_coalesced_renders_keep_each_overlay_with_its_matching_base(
         camera._cached_navigation_revision = None
         camera._cached_map_width = None
         camera._cached_map_height = None
+        camera._cached_navigation_image_width = None
+        camera._cached_navigation_image_height = None
+        camera._cached_room_markers = ()
+        camera._cached_room_markers_revision = None
         camera._cache_key = ()
         camera._last_render_time = 0.0
         camera._render_count = 0
@@ -174,5 +208,14 @@ def test_coalesced_renders_keep_each_overlay_with_its_matching_base(
         assert camera._cached_image == b"png-base-map-b"
         assert camera._cached_navigation_revision == map_b.navigation_revision()
         assert camera._cache_key == ("map-b",)
+        assert camera._cached_room_markers == (
+            {
+                "id": 1,
+                "name": "map-b",
+                "x": 0.5,
+                "y": 0.5,
+                "area_cells": 1,
+            },
+        )
 
     asyncio.run(exercise())

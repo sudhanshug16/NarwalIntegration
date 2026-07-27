@@ -123,6 +123,13 @@ class NarwalMapCamera(NarwalEntity, Camera):
         self._cached_navigation_revision: str | None = None
         self._cached_map_width: int | None = None
         self._cached_map_height: int | None = None
+        # These describe the exact PNG in ``_cached_image``.  The frontend
+        # must never combine navigation metadata from a newer map with a
+        # throttled older bitmap.
+        self._cached_navigation_image_width: int | None = None
+        self._cached_navigation_image_height: int | None = None
+        self._cached_room_markers: tuple[dict[str, int | str | float], ...] = ()
+        self._cached_room_markers_revision: object | None = None
         self._cache_key: tuple = ()
         self._last_render_time: float = 0.0
         self._render_count: int = 0
@@ -162,7 +169,7 @@ class NarwalMapCamera(NarwalEntity, Camera):
         )
 
     @property
-    def extra_state_attributes(self) -> dict[str, str | int | None]:
+    def extra_state_attributes(self) -> dict[str, object]:
         """Expose map identity needed by revision-locked navigation actions."""
         return {
             "render_count": self._render_count,
@@ -171,7 +178,17 @@ class NarwalMapCamera(NarwalEntity, Camera):
             "navigation_map_revision": self._cached_navigation_revision,
             "map_width": self._cached_map_width,
             "map_height": self._cached_map_height,
+            "navigation_image_width": getattr(
+                self, "_cached_navigation_image_width", None
+            ),
+            "navigation_image_height": getattr(
+                self, "_cached_navigation_image_height", None
+            ),
             "navigation_coordinates": "normalized_image_top_left",
+            # Room markers are floor-only centroids derived from the exact raw
+            # grid that produced the cached PNG.  They are presentation data;
+            # room cleaning still sends only their validated Narwal room IDs.
+            "room_markers": list(getattr(self, "_cached_room_markers", ())),
             "manual_control_active": self.coordinator.client.manual_control_active,
             "manual_control_state": self.coordinator.client.manual_control_state,
             "point_navigation_active": self.coordinator.client.point_navigation_active,
@@ -386,6 +403,10 @@ class NarwalMapCamera(NarwalEntity, Camera):
                     self._cached_navigation_revision = None
                     self._cached_map_width = None
                     self._cached_map_height = None
+                    self._cached_navigation_image_width = None
+                    self._cached_navigation_image_height = None
+                    self._cached_room_markers = ()
+                    self._cached_room_markers_revision = None
                     self._cache_key = request.cache_key
                     self._last_render_time = time.monotonic()
                     self._render_count += 1
@@ -443,6 +464,17 @@ class NarwalMapCamera(NarwalEntity, Camera):
         # ``self`` again after an executor await, so base and overlays cannot
         # become cross-revision even if a later request is waiting.
         base_map_image = self._base_map_image
+
+        # Derive marker positions from the same immutable raw map snapshot as
+        # the image.  This stays outside the event loop because it decodes the
+        # compressed grid again, and is cached across robot-overlay updates.
+        if self._cached_room_markers_revision == static_revision:
+            room_markers = self._cached_room_markers
+        else:
+            markers = await self.hass.async_add_executor_job(
+                static_map.room_markers
+            )
+            room_markers = tuple(markers) if isinstance(markers, list) else ()
 
         # Compute robot grid position
         robot_x = None
@@ -529,6 +561,18 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 self._cached_navigation_revision = rendered_navigation_revision
                 self._cached_map_width = static_map.width
                 self._cached_map_height = static_map.height
+                image_width = getattr(base_map_image, "width", None)
+                image_height = getattr(base_map_image, "height", None)
+                self._cached_navigation_image_width = (
+                    image_width if isinstance(image_width, int) and image_width > 0 else None
+                )
+                self._cached_navigation_image_height = (
+                    image_height
+                    if isinstance(image_height, int) and image_height > 0
+                    else None
+                )
+                self._cached_room_markers = room_markers
+                self._cached_room_markers_revision = static_revision
                 self._cache_key = request.cache_key
                 self._last_render_time = time.monotonic()
                 self._render_count += 1

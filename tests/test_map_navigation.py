@@ -14,6 +14,7 @@ from narwal_client.models import (
     MapCellType,
     MapData,
     ObstacleInfo,
+    RoomInfo,
     classify_map_pixel,
 )
 
@@ -269,6 +270,79 @@ def test_grid_classification_and_clearance_fail_closed() -> None:
     map_data.compressed_map = _compressed_grid(values[:-1])
     assert map_data.classify_grid_cell(2, 2) is None
     assert not map_data.is_navigation_target_clear(2, 2)
+
+
+def test_room_markers_follow_rendered_image_orientation_and_floor_only() -> None:
+    """Room markers use the PNG's flipped Y axis and exclude non-floor cells."""
+    room_1 = 1 << 8
+    room_2 = 2 << 8
+    room_3 = 3 << 8
+    map_data = _geometry_map(
+        width=4,
+        height=3,
+        border_top=2,
+        border_right=3,
+        # Rows are raw map grid coordinates, from bottom (y=0) to top (y=2).
+        compressed_map=_compressed_grid(
+            [
+                room_1,
+                0,
+                room_1,
+                room_1 | 0x10,
+                room_1 | 0x08,
+                room_2,
+                room_2,
+                room_3,
+                room_3,
+                room_2,
+                room_1,
+                0x20,
+            ]
+        ),
+        rooms=[
+            RoomInfo(room_id=1, name="Living room"),
+            RoomInfo(room_id=2, room_sub_type=4),
+            RoomInfo(room_id=4, name="No floor"),
+        ],
+    )
+
+    assert map_data.room_markers() == [
+        {
+            "id": 1,
+            "name": "Living room",
+            # Raw floor centroid is (1, 0); rendered image is vertically flipped.
+            "x": 0.375,
+            "y": pytest.approx(5 / 6),
+            "area_cells": 3,
+        },
+        {
+            "id": 2,
+            "name": "Kitchen",
+            # Raw floor centroid is (1, 1), so image-space y is also 1.
+            "x": 0.375,
+            "y": 0.5,
+            "area_cells": 3,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"border_top": 3},
+        {"compressed_map": _compressed_grid([(1 << 8)] * 8)},
+        {"compressed_map": b""},
+    ],
+)
+def test_room_markers_fail_closed_for_invalid_map_data(
+    overrides: dict[str, object],
+) -> None:
+    map_data = _geometry_map(
+        rooms=[RoomInfo(room_id=1, name="Living room")],
+        **overrides,
+    )
+
+    assert map_data.room_markers() == []
 
 
 def test_navigation_clearance_optionally_rejects_furniture() -> None:

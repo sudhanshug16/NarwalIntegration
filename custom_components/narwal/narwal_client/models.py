@@ -610,6 +610,77 @@ class MapData:
         digest.update(self.compressed_map)
         return digest.hexdigest()
 
+    def room_markers(self) -> list[dict[str, int | str | float]]:
+        """Return named room-floor centroids in rendered image coordinates.
+
+        The map grid stores Y increasing upward, while the rendered PNG is
+        vertically flipped.  Marker coordinates therefore use the same
+        unrotated, image-top-left convention as ``normalized_image_to_world``.
+        This deliberately fails closed: a marker is emitted only when the raw
+        grid has an exact valid size, the room is known by map metadata, and
+        its contributing cells are classified as assigned room floor.
+        """
+        pixels = self._navigation_pixels()
+        if pixels is None or not isinstance(self.rooms, list):
+            return []
+
+        room_names: dict[int, str] = {}
+        room_order: list[int] = []
+        duplicate_room_ids: set[int] = set()
+        for room in self.rooms:
+            if (
+                not isinstance(room, RoomInfo)
+                or not isinstance(room.room_id, int)
+                or isinstance(room.room_id, bool)
+                or room.room_id <= 0
+            ):
+                continue
+
+            name = room.display_name
+            if not isinstance(name, str) or not name:
+                continue
+            if room.room_id in room_names:
+                duplicate_room_ids.add(room.room_id)
+                continue
+            room_names[room.room_id] = name
+            room_order.append(room.room_id)
+
+        for room_id in duplicate_room_ids:
+            room_names.pop(room_id, None)
+
+        room_sum_x: dict[int, int] = {}
+        room_sum_y: dict[int, int] = {}
+        room_count: dict[int, int] = {}
+        for index, value in enumerate(pixels):
+            if classify_map_pixel(value) is not MapCellType.ROOM_FLOOR:
+                continue
+            room_id = value >> 8
+            if room_id not in room_names:
+                continue
+            grid_x = index % self.width
+            grid_y = index // self.width
+            room_sum_x[room_id] = room_sum_x.get(room_id, 0) + grid_x
+            room_sum_y[room_id] = room_sum_y.get(room_id, 0) + grid_y
+            room_count[room_id] = room_count.get(room_id, 0) + 1
+
+        markers: list[dict[str, int | str | float]] = []
+        for room_id in room_order:
+            count = room_count.get(room_id, 0)
+            if room_id in duplicate_room_ids or count == 0:
+                continue
+            grid_x = room_sum_x[room_id] // count
+            image_y = self.height - 1 - (room_sum_y[room_id] // count)
+            markers.append(
+                {
+                    "id": room_id,
+                    "name": room_names[room_id],
+                    "x": (grid_x + 0.5) / self.width,
+                    "y": (image_y + 0.5) / self.height,
+                    "area_cells": count,
+                }
+            )
+        return markers
+
     def world_to_grid(
         self, world_x: float, world_y: float
     ) -> tuple[float, float] | None:

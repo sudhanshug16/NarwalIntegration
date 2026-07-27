@@ -188,6 +188,19 @@ def install() -> None:
     # homeassistant.components.*
     ha_comp = _mod("homeassistant.components", ha)
 
+    ha_frontend = _mod("homeassistant.components.frontend", ha_comp)
+    ha_frontend.add_extra_js_url = MagicMock()  # type: ignore[attr-defined]
+
+    ha_http = _mod("homeassistant.components.http", ha_comp)
+
+    @dataclass(frozen=True)
+    class _StaticPathConfig:
+        url_path: str
+        path: str
+        cache_headers: bool = True
+
+    ha_http.StaticPathConfig = _StaticPathConfig  # type: ignore[attr-defined]
+
     ha_vac = _mod("homeassistant.components.vacuum", ha_comp)
     ha_vac.DOMAIN = "vacuum"  # type: ignore[attr-defined]
     class _Segment:

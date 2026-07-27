@@ -35,6 +35,7 @@ from .const import (
     SERVICE_STOP_TELECONTROL,
 )
 from .coordinator import NarwalCoordinator, active_telecontrol_reason
+from .frontend_card import async_register_frontend_card
 from .narwal_client import (
     Capability,
     CleaningRoute,
@@ -693,7 +694,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up Narwal services."""
+    """Set up Narwal services and bundled Lovelace resources."""
+    try:
+        await async_register_frontend_card(hass)
+    except Exception:
+        # A frontend resource must not prevent the established local vacuum
+        # integration and its emergency-stop services from loading.
+        _LOGGER.exception("Could not register bundled Narwal Lovelace card")
     _async_register_services(hass)
     return True
 

@@ -137,6 +137,27 @@ data:
   passes: 1
 ```
 
+### Narwal Lovelace control card
+
+Version `1.1.0-beta.4` bundles a dependency-free `custom:narwal-control-card`
+resource. It layers a revision-locked map interaction surface on the existing
+Home Assistant actions instead of allowing a browser to speak Narwal's local
+WebSocket protocol directly. It provides:
+
+- click-to-go with a visible destination marker and an explicit confirmation
+  button;
+- selectable mapped rooms, using room IDs and the currently visible mode,
+  suction, water, scrub, pass, and route settings;
+- a hold-to-drive joystick that emits 100 ms bounded pulses and calls the
+  emergency stop path on release, pointer loss, tab change, or window blur;
+  and
+- persistent Stop navigation and Emergency stop buttons.
+
+The card automatically registers its frontend resource when the integration
+loads. Add it as a Manual card in a Lovelace dashboard; a ready-to-paste
+configuration and its safety model are in
+[the Lovelace card guide](docs/NARWAL_LOVELACE_CARD.md).
+
 ## Installation
 
 ### HACS
@@ -178,8 +199,9 @@ This milestone deliberately withholds the following official-app areas:
   room split/merge, restore, and boundary or safety-distance edits;
 - physical camera/video, obstacle media, patrol, cruise, or remote-camera
   controls (the Home Assistant camera entity is a rendered map);
-- continuous joystick/gamepad UI and click-on-map navigation UI; the bounded
-  service-level motion primitives above are the current surface;
+- arbitrary rectangle cleaning and gamepad support; the bundled UI supports
+  only revision-locked click-to-go, a bounded hold-to-drive joystick, and
+  mapped-room selection;
 - lower-level station maintenance actions;
 - pumps, drain/water exchange, detergent, or plumbing controls;
 - firmware download, installation, upgrade, rollback, or factory reset; or

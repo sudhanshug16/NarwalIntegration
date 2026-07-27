@@ -289,8 +289,35 @@ def test_clean_rooms_awaits_entity_target_extraction() -> None:
 
 async def test_services_are_registered_during_integration_setup() -> None:
     hass = MagicMock()
+    hass.data = {}
+    hass.http.async_register_static_paths = AsyncMock()
 
     assert await async_setup(hass, {}) is True
+
+    assert {
+        registered.args[1]
+        for registered in hass.services.async_register.call_args_list
+    } == {
+        SERVICE_CLEAN_ROOMS,
+        SERVICE_DRIVE,
+        SERVICE_GO_TO,
+        SERVICE_SET_SCHEDULE_ENABLED,
+        SERVICE_STOP_NAVIGATION,
+        SERVICE_STOP_TELECONTROL,
+    }
+
+
+async def test_service_setup_survives_frontend_resource_failure() -> None:
+    """A missing frontend file cannot remove existing stop/control services."""
+    hass = MagicMock()
+    hass.data = {}
+    hass.http.async_register_static_paths = AsyncMock()
+
+    with patch(
+        "custom_components.narwal.async_register_frontend_card",
+        new=AsyncMock(side_effect=RuntimeError("frontend unavailable")),
+    ):
+        assert await async_setup(hass, {}) is True
 
     assert {
         registered.args[1]

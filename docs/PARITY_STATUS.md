@@ -38,17 +38,17 @@ required.
 | Area | Current Home Assistant surface | Status and boundary |
 | --- | --- | --- |
 | Basic vacuum control | Start, pause, resume, stop, return to dock, locate, state, battery, and cleaning statistics | **Compatibility path** |
-| Parameterized cleaning | AX15 modes, suction, water, scrub, passes, capability-gated route controls, and `narwal.clean_rooms` | **Exposed** when AX15 advertises multi-zone cleaning; physical parameter behavior still needs checking |
+| Parameterized cleaning | AX15 modes, suction, water, scrub, passes, capability-gated route controls, `narwal.clean_rooms`, and mapped-room selection in the bundled Lovelace card | **Exposed** when AX15 advertises multi-zone cleaning; physical parameter behavior still needs checking |
 | Dock actions | AX15 dust empty, mop wash/dry, combined wash/dry, and capability-gated bag-dry actions | **Exposed** while docked; no claim for lower-level maintenance or plumbing |
 | Persistent settings | Typed select/switch/number entities backed by one-field `config/set` plus exact `config/get` read-back | **Exposed** for AX15 with upload-configuration capability and a matching live field; supervised physical validation pending |
 | Cleaning plans | Current and saved plan metadata diagnostic sensor | **Diagnostic**, capability-gated and read-only |
 | Schedules | Schedule metadata diagnostic sensor plus `narwal.set_schedule_enabled` for an existing task | Inventory is **Diagnostic**; the narrow enable toggle is **Exposed** with exact read-back; create/delete/timing/cron edits are **Withheld** |
 | Consumables | Maintenance and replacement category diagnostic sensor | **Diagnostic**; local remaining-life values are not established |
-| Active map | Rendered map camera, rooms, dock, robot trail, and revision metadata used by go-to | **Compatibility path** plus navigation metadata |
+| Active map | Rendered map camera, rooms, dock, robot trail, revision metadata, exact-frame room markers, and the bundled Lovelace map card | **Compatibility path** plus exposed map interaction UI; physical navigation result still needs checking |
 | Saved/editable map inventory | Map inventory diagnostic with saved-map summaries, editable-map metadata, and supplementary-update state | **Diagnostic**, capability-gated and read-only; no map geometry is changed |
 | Firmware/language/voice metadata | Device metadata diagnostic with component firmware hierarchy, configured/supported languages, and current voice-package metadata | **Diagnostic**, with each query capability-gated and read-only |
 | Local timeline/report | Recent robot-local timeline diagnostic plus a strict clean-report decoder | Timeline is **Diagnostic**; richer clean-report parsing is **Codec only**; neither is Narwal cloud history |
-| Manual drive and point navigation | Bounded `drive`, revision-locked `go_to`, `stop_navigation`, and emergency `stop_telecontrol` actions | **Exposed** on AX15 with telecontrol-heartbeat capability; no supervised motion result has been recorded |
+| Manual drive and point navigation | Bounded `drive`, revision-locked `go_to`, stop actions, plus a hold-to-drive/click-to-go Lovelace card | **Exposed** on AX15 with telecontrol-heartbeat capability; no supervised motion result has been recorded |
 | Physical camera and patrol | None; the camera entity above is only a map rendering | **Withheld** |
 | Destructive map writes | None | **Withheld** |
 | Pump/plumbing, firmware writes, factory reset | None | **Withheld** |
@@ -190,10 +190,20 @@ Do not rely on the vacuum entity's normal Stop action for telecontrol: it sends
 the cleaning-stop command. Use `narwal.stop_telecontrol` for the combined
 emergency path, or `narwal.stop_navigation` for point navigation specifically.
 
-This is the service-level foundation for a future click-to-go map and
-hold-to-drive joystick/gamepad. It is not a continuous joystick UI, and
-point-navigation accuracy remains subject to the robot's obstacle avoidance and
-arrival tolerance.
+The bundled `custom:narwal-control-card` now provides a revision-aware
+click-to-go map, mapped-room selection, and a hold-to-drive dead-man joystick
+on top of these actions. It holds a map click until an explicit confirmation,
+invalidates it when the rendered map revision changes, and never sends a
+browser-to-robot connection. The joystick sends only 100 ms service pulses;
+pointer release/cancel/lost capture, window blur, tab hiding, card teardown,
+and its permanent Emergency stop all invoke `narwal.stop_telecontrol`.
+It is not a gamepad or unbounded-motion surface, and point-navigation accuracy
+remains subject to the robot's obstacle avoidance and arrival tolerance.
+
+Mapped rooms are inferred from exact room-floor cells in the cached map frame.
+The integration deliberately does not offer arbitrary drawn cleaning rectangles:
+the AX15 payload and coordinate convention for those official-app controls have
+not been recovered or physically validated.
 
 ### Narrow schedule update
 
@@ -283,8 +293,9 @@ matrix. Local AX15 work must not silently fall back to the cloud.
    firmware/language/voice, and local-timeline queries on AX15 fixtures and
    hardware; then connect the clean-report decoder without implying
    cloud-history parity.
-5. **Build deliberate motion UI.** Add a revision-aware click-to-go map and a
-   hold-to-drive dead-man joystick/gamepad on top of the bounded services.
+5. **Validate deliberate motion UI.** Supervise the bundled revision-aware
+   click-to-go map and hold-to-drive dead-man joystick on an AX15, then consider
+   gamepad support only after its browser disconnect/release behavior is tested.
 6. **Capture schedule CRUD before implementing it.** Preserve unknown fields and
    do not infer cron semantics from one locale or app version.
 7. **Handle map edits as transactions.** Preserve the original map and revision,
