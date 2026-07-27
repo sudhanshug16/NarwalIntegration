@@ -593,8 +593,17 @@ class NarwalClient:
     ) -> None:
         """Update state from robot_base_status, ignoring stale dock overlays mid-task."""
         now = time.monotonic() if now is None else now
-        self._update_observed_telecontrol_state(decoded)
         base_status = _base_status_working_status(decoded)
+        # AX15 omits both telecontrol fields after leaving manual control
+        # instead of broadcasting explicit zero values. A fresh non-telecontrol
+        # working state therefore confirms OFF/UNSPECIFIED.
+        self._update_observed_telecontrol_state(
+            decoded,
+            clear_missing=(
+                base_status is not None
+                and base_status != WorkingStatus.TELECONTROL
+            ),
+        )
         signature = (decoded.get("3"), decoded.get("11"), decoded.get("47"))
         if signature != self._last_base_status_log:
             self._last_base_status_log = signature
@@ -2962,11 +2971,21 @@ class NarwalClient:
             elif not await self._wait_for_manual_control_state(
                 int(ManualControlMode.OFF)
             ):
-                failures.append(
-                    NarwalCommandError(
-                        "Robot did not report manual-control OFF"
+                # AX15 can acknowledge OFF before its final standby broadcast
+                # reaches this listener. Confirm with an immediate fresh base
+                # status rather than treating a missed broadcast as failure.
+                await self.get_status(full_update=True, require_full=True)
+                if (
+                    self._manual_control_state
+                    != int(ManualControlMode.OFF)
+                    or self.state.working_status
+                    == WorkingStatus.TELECONTROL
+                ):
+                    failures.append(
+                        NarwalCommandError(
+                            "Robot did not report manual-control OFF"
+                        )
                     )
-                )
         except Exception as err:
             failures.append(err)
         finally:

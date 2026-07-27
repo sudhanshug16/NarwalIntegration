@@ -101,3 +101,31 @@ errors, disconnect outcome, and operator observations.
 
 The JSONL file is the evidence source. Markdown is a generated field notebook,
 not a replacement for the raw capture.
+
+## AX15 live findings
+
+Validated on Freo X10 Pro AX15 firmware `v01.03.10.03`:
+
+- `map/display_map` positions are map-grid coordinates. Multiply displacement
+  by the active map resolution (`60 mm/pixel` on the tested map), not by an
+  assumed decimetre scale.
+- A bounded `0.5s` joystick pulse measured approximately:
+  - linear `3`: `0.0809` grid units, about `0.49 cm`;
+  - linear `5`: `0.1363` grid units, about `0.82 cm`;
+  - linear `10`: `0.2766` grid units, about `1.66 cm`;
+  - angular `10`: about `5.4–6.1°`.
+- Positive linear moves forward. Positive angular turns left/counter-clockwise
+  physically, though map-heading and compass signs can use different frames.
+- A body-edge tape mark includes displacement caused by rotation; map telemetry
+  measures the robot centre.
+- AX15 can omit manual-control fields rather than broadcasting explicit zero
+  after OFF. Fresh standby with omitted telecontrol fields confirms OFF.
+- If OFF is rejected or mode setup aborts, `task/force_end` is the dependable
+  recovery. Never disconnect while AX15 still reports working state 21,
+  manual-control field 31 = 1, or telecontrol field 19 = 1.
+- Point navigation silently performs a localization rotation before movement.
+  A cached idle pose can jump substantially during that rotation, so relative
+  targets computed before localization are unsafe.
+- Point targets and trajectories are quantized to map-grid coordinates and
+  have arrival tolerance. Use an absolute point on the current map, not a
+  relative distance from stale pose.

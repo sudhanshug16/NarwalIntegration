@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -53,3 +55,30 @@ def test_transcript_annotation_and_markdown_report(tmp_path: Path) -> None:
     text = report.read_text()
     assert "base-status" in text
     assert "Robot remained docked." in text
+
+
+def test_jsonable_handles_mappingproxy_in_dataclass() -> None:
+    @dataclass
+    class Snapshot:
+        values: object
+
+    result = lab.jsonable(Snapshot(MappingProxyType({"volume": 50})))
+    assert result == {"values": {"volume": 50}}
+
+
+def test_command_connection_does_not_pre_subscribe() -> None:
+    source = SCRIPT.read_text()
+    connect_body = source.split("async def connect_client", 1)[1].split(
+        "async def snapshot", 1
+    )[0]
+    assert "subscribe_to_topics" not in connect_body
+
+
+def test_joystick_subscribes_before_manual_pulse() -> None:
+    source = SCRIPT.read_text()
+    joystick_body = source.split('if args.mode == "joystick":', 1)[1].split(
+        'if args.mode == "raw":', 1
+    )[0]
+    assert joystick_body.index("subscribe_to_topics") < joystick_body.index(
+        "measured_joystick_pulse"
+    )
