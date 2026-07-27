@@ -230,7 +230,12 @@ class NarwalControlCard extends HTMLElement {
 
   _busy(camera, vacuum) {
     const attributes = camera?.attributes || {};
-    return !["idle", "docked"].includes(vacuum?.state) || Boolean(attributes.manual_control_active) || Boolean(attributes.point_navigation_active);
+    return !["idle", "docked"].includes(vacuum?.state)
+      || Boolean(attributes.manual_control_active)
+      || Number(attributes.manual_control_state || 0) !== 0
+      || Boolean(attributes.point_navigation_active)
+      || Number(attributes.telecontrol_status || 0) === 3
+      || Number(attributes.working_status || 0) === 21;
   }
 
   _canGoTo(camera, vacuum) {
@@ -239,7 +244,13 @@ class NarwalControlCard extends HTMLElement {
 
   _canDrive(camera, vacuum) {
     const attributes = camera?.attributes || {};
-    return vacuum?.state === "idle" && !Boolean(attributes.manual_control_active) && !Boolean(attributes.point_navigation_active) && !this._drive;
+    return vacuum?.state === "idle"
+      && !Boolean(attributes.manual_control_active)
+      && Number(attributes.manual_control_state || 0) === 0
+      && !Boolean(attributes.point_navigation_active)
+      && Number(attributes.telecontrol_status || 0) !== 3
+      && Number(attributes.working_status || 0) !== 21
+      && !this._drive;
   }
 
   _canClean(camera, vacuum) {
@@ -287,6 +298,9 @@ class NarwalControlCard extends HTMLElement {
     const frame = this._frame(camera);
     const revision = camera?.attributes?.navigation_map_revision || null;
     const mapReady = Boolean(frame && this._loadedFrame === frame);
+    const manualControlState = Number(camera?.attributes?.manual_control_state || 0);
+    const pointNavigationReported = Number(camera?.attributes?.telecontrol_status || 0) === 3;
+    const telecontrolWorkingState = Number(camera?.attributes?.working_status || 0) === 21;
 
     if (this._lastRevision && revision !== this._lastRevision) {
       this._pendingPoint = null;
@@ -321,9 +335,15 @@ class NarwalControlCard extends HTMLElement {
         ? "Waiting for a rendered, revision-locked map frame."
         : !mapReady
           ? "Loading the current map frame before it can be used for navigation."
-          : canGo
-            ? "Tap a clear-looking map location, then explicitly confirm Go to selected point."
-            : "Map actions are disabled while the robot is busy, under manual control, or navigating.";
+          : manualControlState !== 0
+            ? "Manual mode is still reported active. Press Stop navigation to clear a previous go-to request, then wait for OFF before retrying."
+            : pointNavigationReported
+              ? "Point navigation is still reported active. Use Stop navigation before choosing another point."
+              : telecontrolWorkingState
+                ? "Telecontrol is still reported active. Use Stop navigation before choosing another point."
+              : canGo
+                ? "Tap a clear-looking map location, then explicitly confirm Go to selected point."
+                : "Map actions are disabled while the robot is busy, under manual control, or navigating.";
 
     this._els.goButton.disabled = !this._pendingPoint || !canGo || this._pendingPoint.frame !== frame;
     this._els.clearPoint.disabled = !this._pendingPoint;
@@ -459,14 +479,14 @@ class NarwalControlCard extends HTMLElement {
 
   async _stopNavigation() {
     const success = await this._callService("stop_navigation", { entity_id: this._config.vacuum_entity });
-    if (success) this._setMessage("Point navigation stop requested.");
+    if (success) this._setMessage("Point-navigation stop requested. Wait for manual control to report OFF before retrying.");
     this._update();
   }
 
   async _emergencyStop() {
     this._drive = null;
-    const success = await this._callService("stop_telecontrol", { entity_id: this._config.vacuum_entity }, { silent: true });
-    this._setMessage(success ? "Emergency telecontrol stop requested." : "Emergency stop request failed; verify the robot immediately.", !success);
+    const success = await this._callService("stop_telecontrol", { entity_id: this._config.vacuum_entity });
+    this._setMessage(success ? "Emergency telecontrol stop requested. Wait for the map status to show manual control OFF before retrying." : this._message, !success);
     this._update();
   }
 

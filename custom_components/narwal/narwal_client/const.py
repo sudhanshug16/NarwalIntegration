@@ -212,6 +212,8 @@ class WorkingStatus(IntEnum):
       10 = DOCKED (on dock, charging)
       14 = CHARGED (on dock, fully charged)
       19 = TASK_COMPLETED (transitional: scheduled task finished, returning to base)
+      21 = TELECONTROL (live AX15 point-navigation/joystick transition;
+           matches RobotTaskStatus.TaskType.TELECONTROL in the Narwal app)
 
     Field 3 sub-fields (confirmed live):
       3.2  = 1 means PAUSED (overlay on CLEANING state)
@@ -235,6 +237,7 @@ class WorkingStatus(IntEnum):
     TASK_COMPLETED = 19  # transitional: task finished, robot returning to base (#41)
     # PLACEHOLDER: error state value not yet observed live.
     # Trigger a real error (e.g., pick up robot mid-clean) to discover the value.
+    TELECONTROL = 21  # app TaskType.TELECONTROL; blocks new movement until OFF
     ERROR = 99
 
 

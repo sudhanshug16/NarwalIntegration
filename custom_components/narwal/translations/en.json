@@ -99,6 +99,7 @@
           "returning": "Returning",
           "paused": "Paused",
           "station_active": "Station active",
+          "telecontrol": "Manual control",
           "docked": "Docked",
           "idle": "Idle",
           "error": "Error",

@@ -300,6 +300,23 @@ def _base_status_telecontrol_status(
     return value
 
 
+def _full_base_status_task(
+    decoded: dict[str, Any] | object,
+) -> dict[str, Any] | None:
+    """Return a complete base-status task block, or ``None`` if incomplete."""
+    if not isinstance(decoded, dict) or not decoded:
+        return None
+    field3 = decoded.get("3")
+    if isinstance(field3, list):
+        field3 = field3[0] if field3 else None
+    if not isinstance(field3, dict):
+        return None
+    working_status = field3.get("1")
+    if isinstance(working_status, bool) or not isinstance(working_status, int):
+        return None
+    return field3
+
+
 def _base_status_confirms_docked(
     decoded: dict[str, Any] | object, status: WorkingStatus | None
 ) -> bool:
@@ -406,7 +423,9 @@ class NarwalClient:
         self._manual_control_abort = asyncio.Event()
         self._manual_control_active = False
         self._point_navigation_active = False
+        self._point_navigation_frame_sent = False
         self._point_navigation_seen_active = False
+        self._point_navigation_stop_confirmation_pending = False
         self._point_navigation_start_pending = False
         self._point_navigation_completed_before_ack = False
         self._manual_control_state = int(ManualControlMode.OFF)
@@ -520,7 +539,9 @@ class NarwalClient:
     def _clear_point_navigation_ownership(self) -> None:
         """Clear every client-owned point-navigation overlay."""
         self._point_navigation_active = False
+        self._point_navigation_frame_sent = False
         self._point_navigation_seen_active = False
+        self._point_navigation_stop_confirmation_pending = False
         self._point_navigation_start_pending = False
         self._point_navigation_completed_before_ack = False
         self._point_navigation_path = ()
@@ -528,7 +549,10 @@ class NarwalClient:
         self.state.point_navigation_target = None
 
     def _update_observed_telecontrol_state(
-        self, decoded: dict[str, Any]
+        self,
+        decoded: dict[str, Any],
+        *,
+        clear_missing: bool = False,
     ) -> None:
         """Synchronize explicit base-status telecontrol fields and lifecycle."""
         manual_control_state = decoded.get("31")
@@ -537,10 +561,15 @@ class NarwalClient:
         ):
             self._manual_control_state = manual_control_state
             self.state.manual_control_state = manual_control_state
+        elif clear_missing:
+            self._manual_control_state = int(ManualControlMode.OFF)
+            self.state.manual_control_state = int(ManualControlMode.OFF)
 
         telecontrol_status = _base_status_telecontrol_status(decoded)
         if telecontrol_status is None:
-            return
+            if not clear_missing:
+                return
+            telecontrol_status = int(TelecontrolStatus.UNSPECIFIED)
         self._telecontrol_status = telecontrol_status
         self.state.telecontrol_status = telecontrol_status
         if telecontrol_status == int(TelecontrolStatus.POINT_NAVI):
@@ -549,6 +578,8 @@ class NarwalClient:
                 or self._point_navigation_start_pending
             ):
                 self._point_navigation_seen_active = True
+            return
+        if self._point_navigation_stop_confirmation_pending:
             return
         if not self._point_navigation_seen_active:
             return
@@ -2215,7 +2246,12 @@ class NarwalClient:
                 )
             return snapshot
 
-    async def get_status(self, full_update: bool = True) -> CommandResponse:
+    async def get_status(
+        self,
+        full_update: bool = True,
+        *,
+        require_full: bool = False,
+    ) -> CommandResponse:
         """Query current device base status.
 
         Args:
@@ -2223,6 +2259,8 @@ class NarwalClient:
                 battery, etc). If False, only update hardware-sampled fields
                 (battery, health) — used when robot is not broadcasting and
                 working_status in the response may be stale.
+            require_full: Reject an incomplete base-status response instead of
+                allowing callers to make an action decision from cached state.
         """
         resp = await self.send_command(TOPIC_CMD_GET_BASE_STATUS)
         status_data = resp.data.get("2", {})
@@ -2233,6 +2271,10 @@ class NarwalClient:
                 type(status_data).__name__,
                 status_data,
             )
+            if require_full:
+                raise NarwalCommandError(
+                    "Robot did not return a complete base status"
+                )
             return resp
         if status_data:
             _LOGGER.debug(
@@ -2249,12 +2291,21 @@ class NarwalClient:
                 status_data,
             )
             if full_update:
-                self._update_observed_telecontrol_state(status_data)
+                if require_full and _full_base_status_task(status_data) is None:
+                    raise NarwalCommandError(
+                        "Robot did not return a complete base status"
+                    )
+                self._update_observed_telecontrol_state(
+                    status_data,
+                    clear_missing=True,
+                )
                 self.state.update_from_base_status(status_data)
             else:
                 self.state.update_battery_from_base_status(status_data)
         else:
             _LOGGER.debug("get_status response has no field 2; keys: %s", list(resp.data.keys()))
+            if require_full:
+                raise NarwalCommandError("Robot did not return a complete base status")
         return resp
 
     async def get_current_task(self) -> CurrentCleanTask:
@@ -2601,6 +2652,7 @@ class NarwalClient:
             self._point_navigation_active
             or self._telecontrol_status
             == int(TelecontrolStatus.POINT_NAVI)
+            or self.state.working_status == WorkingStatus.TELECONTROL
         ):
             raise NarwalCommandError(
                 "Point navigation is already active; cancel it first"
@@ -2612,36 +2664,45 @@ class NarwalClient:
             self._require_telecontrol_generation(generation)
             self._raise_if_command_lock_held()
             self._point_navigation_seen_active = False
+            self._point_navigation_frame_sent = False
             self._point_navigation_start_pending = True
             self._point_navigation_completed_before_ack = False
+
+            def _mark_point_navigation_frame_sent() -> None:
+                self._require_telecontrol_generation(generation)
+                self._point_navigation_frame_sent = True
+                # Once the frame is on the socket, fail closed until a known
+                # rejection, observed completion, or confirmed stop clears it.
+                self._point_navigation_active = True
+
             try:
                 response = await self.send_command(
                     TOPIC_CMD_POINT_NAVI,
                     payload=payload,
                     timeout=10.0,
-                    before_send=lambda: self._require_telecontrol_generation(
-                        generation
-                    ),
+                    before_send=_mark_point_navigation_frame_sent,
                 )
             except BaseException:
-                self._clear_point_navigation_ownership()
+                if not self._point_navigation_frame_sent:
+                    self._clear_point_navigation_ownership()
                 raise
             finally:
                 self._point_navigation_start_pending = False
             try:
                 self._require_telecontrol_generation(generation)
             except BaseException:
-                self._clear_point_navigation_ownership()
+                if not self._point_navigation_frame_sent:
+                    self._clear_point_navigation_ownership()
                 raise
-            self._point_navigation_active = (
+            if (
                 self._command_performed(response)
                 and not self._point_navigation_completed_before_ack
-            )
-            if self._point_navigation_active:
+            ):
+                self._point_navigation_active = True
                 self._point_navigation_path = ()
                 self.state.point_navigation_path = []
                 self.state.point_navigation_target = (x, y)
-            else:
+            elif response.result_known or self._point_navigation_completed_before_ack:
                 self._clear_point_navigation_ownership()
             return response
 
@@ -2655,26 +2716,190 @@ class NarwalClient:
         """Compatibility alias for :meth:`start_point_navigation`."""
         return await self.start_point_navigation(x, y, theta=theta)
 
-    async def _cancel_point_navigation_locked(self) -> CommandResponse:
-        """Cancel navigation while the caller owns the telecontrol lock."""
-        try:
-            return await self.send_command(
-                TOPIC_CMD_CANCEL,
-                payload=encode_cancel_navigation_request(),
-                timeout=10.0,
-            )
-        finally:
-            self._clear_point_navigation_ownership()
+    def _point_navigation_force_end_required(
+        self,
+        *,
+        allow_manual_recovery: bool,
+        allow_working_status_recovery: bool,
+    ) -> bool:
+        """Return whether an observed/owned navigation task warrants force-end.
 
-    async def cancel_point_navigation(self) -> CommandResponse:
-        """Cancel point navigation with CancelTaskType.NAVI (3)."""
-        self._telecontrol_stop_generation += 1
-        async with self._telecontrol_lock:
-            return await self._cancel_point_navigation_locked()
+        ``task/force_end`` is global, so it must never be used merely because a
+        visible Stop button was clicked.  The manual-state recovery exception
+        is limited to the navigation stop action: AX15 can leave a failed
+        point-navigation request reporting JOYSTICK even after generic NAVI
+        cancel, as observed live on the target robot.
+        """
+        if (
+            self._point_navigation_active
+            or self._point_navigation_frame_sent
+            or self._point_navigation_seen_active
+            or self._telecontrol_status
+            == int(TelecontrolStatus.POINT_NAVI)
+            or (
+                allow_working_status_recovery
+                and self.state.working_status == WorkingStatus.TELECONTROL
+            )
+        ):
+            return True
+        return (
+            allow_manual_recovery
+            and self._manual_control_state != int(ManualControlMode.OFF)
+            and not self.state.is_cleaning
+            and not self.state.is_returning
+            and not self.state.is_station_active
+        )
+
+    async def _cancel_point_navigation_locked(self) -> CommandResponse:
+        """Send the scoped generic NAVI cancellation under the motion lock."""
+        response = await self.send_command(
+            TOPIC_CMD_CANCEL,
+            payload=encode_cancel_navigation_request(),
+            timeout=10.0,
+        )
+        if self._command_performed(response):
+            self._clear_point_navigation_ownership()
+        return response
+
+    async def _force_end_point_navigation_locked(self) -> CommandResponse:
+        """Use the app's point-navigation recovery route under the lock.
+
+        The extracted Narwal app's point-navigation laboratory tool sends an
+        empty ``ForceEndTask_Request`` to ``task/force_end`` when its Stop
+        button is pressed.  AX15 does not reliably leave telecontrol after the
+        generic ``task/cancel`` / ``CancelTaskType.NAVI`` request, so that
+        request remains an immediate best-effort safety frame only.
+        """
+        return await self.stop(timeout=15.0)
+
+    async def _confirm_point_navigation_stopped_locked(self) -> None:
+        """Require a fresh full status snapshot after acknowledged force-end."""
+        response = await self.get_status(full_update=True)
+        status_data = response.data.get("2")
+        if not isinstance(status_data, dict) or not status_data:
+            raise NarwalCommandError(
+                "Robot did not return a full status after point-navigation stop"
+            )
+        field3 = status_data.get("3")
+        if isinstance(field3, list):
+            field3 = field3[0] if field3 else None
+        if not isinstance(field3, dict):
+            raise NarwalCommandError(
+                "Robot status omitted task state after point-navigation stop"
+            )
+        working_status = field3.get("1")
+        if isinstance(working_status, bool) or not isinstance(
+            working_status, int
+        ):
+            raise NarwalCommandError(
+                "Robot status omitted working state after point-navigation stop"
+            )
+        telecontrol_status = field3.get(
+            "19", int(TelecontrolStatus.UNSPECIFIED)
+        )
+        if isinstance(telecontrol_status, bool) or not isinstance(
+            telecontrol_status, int
+        ):
+            raise NarwalCommandError(
+                "Robot status contained an invalid telecontrol state"
+            )
+        manual_control_state = status_data.get(
+            "31", int(ManualControlMode.OFF)
+        )
+        if isinstance(manual_control_state, bool) or not isinstance(
+            manual_control_state, int
+        ):
+            raise NarwalCommandError(
+                "Robot status contained an invalid manual-control state"
+            )
+        if manual_control_state != int(ManualControlMode.OFF):
+            raise NarwalCommandError(
+                "Robot still reports manual control after force-end"
+            )
+        if telecontrol_status == int(TelecontrolStatus.POINT_NAVI):
+            raise NarwalCommandError(
+                "Robot still reports point navigation after force-end"
+            )
+        if working_status == int(WorkingStatus.TELECONTROL):
+            raise NarwalCommandError(
+                "Robot still reports telecontrol after force-end"
+            )
+
+    async def _complete_telecontrol_stop_locked(self) -> CommandResponse:
+        """Confirm a force-end and restore manual control to OFF.
+
+        Do not silently clear the robot-reported manual state: motion remains
+        blocked unless the force-end and the dead-man cleanup both complete.
+        """
+        response: CommandResponse | None = None
+        force_end_confirmed = False
+        failures: list[Exception] = []
+        self._point_navigation_stop_confirmation_pending = True
+        try:
+            response = await self._force_end_point_navigation_locked()
+            if not self._command_performed(response):
+                failures.append(
+                    NarwalCommandError(
+                        "Robot did not acknowledge point-navigation force-end"
+                    )
+                )
+            else:
+                force_end_confirmed = True
+        except Exception as err:
+            failures.append(err)
+        try:
+            await self._stop_manual_control_locked()
+        except Exception as err:
+            failures.append(err)
+        if force_end_confirmed:
+            try:
+                await self._confirm_point_navigation_stopped_locked()
+            except Exception as err:
+                failures.append(err)
+
+        if failures:
+            detail = "; ".join(
+                f"{type(err).__name__}: {err}" for err in failures
+            )
+            raise NarwalCommandError(
+                "Point-navigation stop was not fully confirmed: "
+                f"{detail}"
+            )
+        if response is None:
+            raise NarwalCommandError("Point-navigation stop produced no response")
+        self._clear_point_navigation_ownership()
+        return response
 
     async def stop_point_navigation(self) -> CommandResponse:
-        """Compatibility alias for :meth:`cancel_point_navigation`."""
-        return await self.cancel_point_navigation()
+        """Stop point navigation without force-ending unrelated robot tasks.
+
+        The immediate zero-velocity, generic-NAVI-cancel, and OFF frames are
+        deliberately sent before waiting on either command lock.  They bound a
+        concurrent joystick/start request.  The typed NAVI cancel is the
+        default scoped request; the app's global force-end is reserved for
+        confirmed point navigation or the AX15's failed-navigation recovery
+        state.
+        """
+        self._telecontrol_stop_generation += 1
+        self._manual_control_abort.set()
+        raw_failures = await self._publish_emergency_stop_frames()
+        if raw_failures:
+            _LOGGER.debug(
+                "Immediate point-navigation safety publish had %d failure(s); "
+                "continuing with acknowledged navigation cleanup",
+                len(raw_failures),
+            )
+        async with self._telecontrol_lock:
+            if self._point_navigation_force_end_required(
+                allow_manual_recovery=True,
+                allow_working_status_recovery=True,
+            ):
+                return await self._complete_telecontrol_stop_locked()
+            return await self._cancel_point_navigation_locked()
+
+    async def cancel_point_navigation(self) -> CommandResponse:
+        """Backward-compatible name for :meth:`stop_point_navigation`."""
+        return await self.stop_point_navigation()
 
     async def _publish_zero_velocity_locked(
         self,
@@ -2815,6 +3040,7 @@ class NarwalClient:
             self._point_navigation_active
             or self._telecontrol_status
             == int(TelecontrolStatus.POINT_NAVI)
+            or self.state.working_status == WorkingStatus.TELECONTROL
         ):
             raise NarwalCommandError(
                 "Point navigation is already active; cancel it before driving"
@@ -2904,7 +3130,12 @@ class NarwalClient:
         )
 
     async def emergency_stop_telecontrol(self) -> None:
-        """Abort client-owned telecontrol and request both OFF and NAVI cancel."""
+        """Abort telecontrol with an immediate dead-man stop.
+
+        A joystick release never force-ends an unrelated cleaning task.  The
+        point-navigation recovery force-end is only used when navigation is
+        client-owned or robot-observed.
+        """
         self._telecontrol_stop_generation += 1
         self._manual_control_abort.set()
         raw_failures = await self._publish_emergency_stop_frames()
@@ -2914,31 +3145,20 @@ class NarwalClient:
                 "continuing with acknowledged cleanup",
                 len(raw_failures),
             )
-        failures: list[Exception] = []
         async with self._telecontrol_lock:
             try:
-                response = await self._cancel_point_navigation_locked()
-                if not self._command_performed(response):
-                    failures.append(
-                        NarwalCommandError(
-                            "Robot did not acknowledge navigation cancel"
-                        )
-                    )
+                if self._point_navigation_force_end_required(
+                    allow_manual_recovery=False,
+                    allow_working_status_recovery=False,
+                ):
+                    await self._complete_telecontrol_stop_locked()
+                else:
+                    await self._stop_manual_control_locked()
             except Exception as err:
-                failures.append(err)
-            try:
-                await self._stop_manual_control_locked()
-            except Exception as err:
-                failures.append(err)
-
-        if failures:
-            detail = "; ".join(
-                f"{type(err).__name__}: {err}" for err in failures
-            )
-            raise NarwalCommandError(
-                "Telecontrol emergency stop was not fully confirmed: "
-                f"{detail}"
-            )
+                raise NarwalCommandError(
+                    "Telecontrol emergency stop was not fully confirmed: "
+                    f"{type(err).__name__}: {err}"
+                ) from err
 
     async def take_picture(self) -> bytes | None:
         """Capture a photo from the robot's camera.

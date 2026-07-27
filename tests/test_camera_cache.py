@@ -86,6 +86,7 @@ def test_camera_advertises_revision_of_cached_png_not_newer_client_map() -> None
         {
             "map_data": _map(edit_version=99),
             "point_navigation_path": [],
+            "working_status": 1,
         },
     )()
     client = type(
@@ -95,6 +96,7 @@ def test_camera_advertises_revision_of_cached_png_not_newer_client_map() -> None
             "state": state,
             "manual_control_active": False,
             "manual_control_state": 0,
+            "telecontrol_status": 0,
             "point_navigation_active": False,
         },
     )()
@@ -109,6 +111,8 @@ def test_camera_advertises_revision_of_cached_png_not_newer_client_map() -> None
     assert camera.extra_state_attributes["map_height"] == 223
     assert camera.extra_state_attributes["navigation_image_width"] == 828
     assert camera.extra_state_attributes["navigation_image_height"] == 892
+    assert camera.extra_state_attributes["telecontrol_status"] == 0
+    assert camera.extra_state_attributes["working_status"] == 1
     assert camera.extra_state_attributes["room_markers"] == [
         {
             "id": 4,

@@ -179,12 +179,17 @@ return-to-dock, and station activity.
   `navigation_map_revision` from the map camera, converts normalized unrotated
   image coordinates back to robot-world coordinates, and rejects out-of-map,
   non-floor, occupied, furniture-marked, or one-cell-clearance failures.
-- `narwal.stop_navigation` sends the typed point-navigation cancel.
-- `narwal.stop_telecontrol` attempts both the manual dead-man cleanup and point
-  navigation cancel. It immediately invalidates pending starts, sends a typed
-  cancel, three raw zero-velocity messages, and manual-off without waiting for
-  a busy command lock, then performs acknowledged cleanup. Disconnect cleanup
-  also covers client-owned motion.
+- `narwal.stop_navigation` immediately sends raw NAVI-cancel/zero/manual-off
+  safety frames, then sends the typed point-navigation cancel. If the client or
+  robot confirms point navigation (or AX15's observed stuck-go-to recovery
+state), it uses the mobile app laboratory tool's `task/force_end` recovery
+and confirms manual mode off plus a fresh non-telecontrol status snapshot. It
+never force-ends ordinary cleaning merely because the Stop navigation button
+was clicked.
+- `narwal.stop_telecontrol` attempts the manual dead-man cleanup immediately.
+  It uses force-end only for client-owned or robot-reported point navigation;
+  a joystick release alone cannot force-end an unrelated task. Disconnect
+  cleanup also covers client-owned motion.
 
 Do not rely on the vacuum entity's normal Stop action for telecontrol: it sends
 the cleaning-stop command. Use `narwal.stop_telecontrol` for the combined

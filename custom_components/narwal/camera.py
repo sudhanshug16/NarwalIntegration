@@ -191,6 +191,8 @@ class NarwalMapCamera(NarwalEntity, Camera):
             "room_markers": list(getattr(self, "_cached_room_markers", ())),
             "manual_control_active": self.coordinator.client.manual_control_active,
             "manual_control_state": self.coordinator.client.manual_control_state,
+            "telecontrol_status": self.coordinator.client.telecontrol_status,
+            "working_status": int(self.coordinator.client.state.working_status),
             "point_navigation_active": self.coordinator.client.point_navigation_active,
             "point_navigation_path_points": len(
                 self.coordinator.client.state.point_navigation_path

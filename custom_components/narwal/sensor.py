@@ -268,6 +268,7 @@ class NarwalTaskStatusSensor(NarwalEntity, SensorEntity):
         "returning",
         "paused",
         "station_active",
+        "telecontrol",
         "docked",
         "idle",
         "error",
@@ -296,6 +297,8 @@ class NarwalTaskStatusSensor(NarwalEntity, SensorEntity):
             return "error"
         if state.is_station_active:
             return "station_active"
+        if state.working_status == WorkingStatus.TELECONTROL:
+            return "telecontrol"
         if state.is_docked:
             return "docked"
         if state.is_paused and is_cleaning_status:
@@ -323,6 +326,8 @@ class NarwalTaskStatusSensor(NarwalEntity, SensorEntity):
             return "mdi:home-import-outline"
         if value == "paused":
             return "mdi:pause"
+        if value == "telecontrol":
+            return "mdi:gamepad-variant-outline"
         if value == "error":
             return "mdi:alert-circle-outline"
         return "mdi:information-outline"

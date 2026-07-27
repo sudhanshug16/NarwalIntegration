@@ -1,7 +1,7 @@
 # Narwal Lovelace control card
 
 `custom:narwal-control-card` is bundled with this integration from version
-`1.1.0-beta.4`. It uses Home Assistant service calls only; the browser never
+`1.1.0-beta.5`. It uses Home Assistant service calls only; the browser never
 connects to port 9002 or directly controls the robot.
 
 The integration registers the JavaScript resource automatically on startup.
@@ -32,10 +32,10 @@ dashboard.
 | UI control | Home Assistant action | Guard |
 | --- | --- | --- |
 | Tap map, then **Go to selected point** | `narwal.go_to` | The image must load for the current map revision. A new rendered map clears the pending point. The backend then re-fetches/validates the map, target cell, one-cell clearance, furniture, and live robot state. |
-| **Stop navigation** | `narwal.stop_navigation` | Always visible; it is a safe cancel path even when the last UI update is stale. |
+| **Stop navigation** | `narwal.stop_navigation` | Always visible; it sends navigation-scoped cancellation. The app-recovered force-end is limited to confirmed point navigation or the AX15 stuck-go-to recovery state, never an ordinary clean. |
 | Room labels/chips, then **Clean selected rooms** | `narwal.clean_rooms` | The card sends known Narwal room IDs, not drawn geometry. The backend checks model, capabilities, rooms, and live action state. |
 | Hold an arrow | repeated `narwal.drive` calls | Each request is a 100 ms bounded pulse. The card does not queue overlapping drive calls. |
-| Release arrow, pointer cancel/loss, tab hide, blur, card removal, **Emergency stop** | `narwal.stop_telecontrol` | The server performs the raw zero-velocity/manual-off cleanup and point-navigation cancellation. |
+| Release arrow, pointer cancel/loss, tab hide, blur, card removal, **Emergency stop** | `narwal.stop_telecontrol` | The server performs raw zero-velocity/manual-off cleanup. It only uses force-end for client-owned or robot-reported point navigation, never a joystick release alone. |
 
 The joystick only enables when Home Assistant reports the vacuum as `idle`,
 undocked, and free of manual or point navigation. Click-to-go and room cleaning

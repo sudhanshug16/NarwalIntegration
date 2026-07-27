@@ -41,12 +41,10 @@ from .narwal_client import (
     CleaningRoute,
     CommandResult,
     FanLevel,
-    ManualControlMode,
     MopHumidity,
     MopStrengthLevel,
     NarwalCommandError,
     NarwalConnectionError,
-    TelecontrolStatus,
     WorkingStatus,
     WorkMode,
     capability_enabled,
@@ -366,7 +364,7 @@ async def _async_prepare_motion(coordinator: NarwalCoordinator) -> None:
     try:
         if not client.robot_awake:
             await client.wake(timeout=10.0)
-        await client.get_status(full_update=True)
+        await client.get_status(full_update=True, require_full=True)
     except Exception as err:
         raise HomeAssistantError(
             "Could not confirm the robot's current state"
@@ -389,20 +387,8 @@ async def _async_prepare_motion(coordinator: NarwalCoordinator) -> None:
         raise HomeAssistantError(
             "Wait for the base-station task to finish before telecontrol"
         )
-    if (
-        client.manual_control_active
-        or client.manual_control_state != int(ManualControlMode.OFF)
-    ):
-        raise HomeAssistantError(
-            "Manual control is already active; call stop_telecontrol first"
-        )
-    if (
-        client.point_navigation_active
-        or client.telecontrol_status == int(TelecontrolStatus.POINT_NAVI)
-    ):
-        raise HomeAssistantError(
-            "Point navigation is already active; call stop_navigation first"
-        )
+    if reason := active_telecontrol_reason(client):
+        raise HomeAssistantError(reason)
 
 
 def _exclusive_action_lock(
@@ -623,9 +609,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await async_go_to_for_coordinator(coordinator, call)
 
     async def async_stop_navigation(call) -> None:
-        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        # A stop must remain available even if an intermittent capability
+        # refresh failed.  It is a safe recovery action, not an optional
+        # feature activation.
+        coordinator = await _async_single_narwal_coordinator(hass, call)
         try:
-            response = await coordinator.client.cancel_point_navigation()
+            response = await coordinator.client.stop_point_navigation()
         except Exception as err:
             raise HomeAssistantError(
                 "Narwal point-navigation stop failed"
@@ -634,7 +623,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
         coordinator.async_set_updated_data(coordinator.client.state)
 
     async def async_stop_telecontrol(call) -> None:
-        coordinator = await _async_single_telecontrol_coordinator(hass, call)
+        # Do not capability-gate an emergency stop: a temporarily incomplete
+        # feature inventory must never prevent the user from stopping motion.
+        coordinator = await _async_single_narwal_coordinator(hass, call)
         try:
             await coordinator.client.emergency_stop_telecontrol()
         except Exception as err:

@@ -47,7 +47,7 @@ def active_telecontrol_reason(client: NarwalClient) -> str | None:
     """
     manual_active = getattr(client, "manual_control_active", False)
     if manual_active is True:
-        return "Manual control is active; call stop_telecontrol first"
+        return "Manual control is already active; call stop_telecontrol first"
 
     manual_state = getattr(client, "manual_control_state", int(ManualControlMode.OFF))
     if (
@@ -55,11 +55,11 @@ def active_telecontrol_reason(client: NarwalClient) -> str | None:
         and not isinstance(manual_state, bool)
         and manual_state != int(ManualControlMode.OFF)
     ):
-        return "Manual control is active; call stop_telecontrol first"
+        return "Manual control is already active; call stop_telecontrol first"
 
     point_navigation_active = getattr(client, "point_navigation_active", False)
     if point_navigation_active is True:
-        return "Point navigation is active; call stop_navigation first"
+        return "Point navigation is already active; call stop_navigation first"
 
     telecontrol_status = getattr(
         client,
@@ -71,7 +71,11 @@ def active_telecontrol_reason(client: NarwalClient) -> str | None:
         and not isinstance(telecontrol_status, bool)
         and telecontrol_status == int(TelecontrolStatus.POINT_NAVI)
     ):
-        return "Point navigation is active; call stop_navigation first"
+        return "Point navigation is already active; call stop_navigation first"
+
+    state = getattr(client, "state", None)
+    if getattr(state, "working_status", None) == WorkingStatus.TELECONTROL:
+        return "Telecontrol is active; call stop_navigation first"
     return None
 
 

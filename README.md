@@ -88,9 +88,15 @@ repeated zero-velocity commands followed by manual mode off. `narwal.go_to`
 uses normalized coordinates on the unrotated map image, requires the current
 map revision, and rejects destinations outside the map or on uncleared,
 occupied, or furniture-marked cells. Stop actions and disconnect cleanup cover
-client-owned joystick and point-navigation work. `stop_telecontrol` first
-invalidates pending motion, then sends its raw dead-man cleanup before awaiting
-the acknowledged cancel/mode-off cleanup.
+client-owned joystick and point-navigation work. They first invalidate pending
+motion and send raw dead-man cleanup without waiting for a busy command lock.
+The navigation stop uses the scoped NAVI cancel by default; it uses the Narwal
+app's global `task/force_end` recovery only for a confirmed point-navigation
+task or the AX15's observed stuck-go-to recovery state, never merely because a
+Stop button was clicked while cleaning. Joystick release uses
+zero-velocity/manual-off cleanup and never force-ends an unrelated task. A
+force-end recovery remains blocked until a fresh status snapshot confirms that
+point navigation/telecontrol has ended.
 
 These controls are **not yet marked supported**: their protocol and failure
 paths are tested, but their physical results on the target AX15 have not been
@@ -139,7 +145,7 @@ data:
 
 ### Narwal Lovelace control card
 
-Version `1.1.0-beta.4` bundles a dependency-free `custom:narwal-control-card`
+Version `1.1.0-beta.5` bundles a dependency-free `custom:narwal-control-card`
 resource. It layers a revision-locked map interaction surface on the existing
 Home Assistant actions instead of allowing a browser to speak Narwal's local
 WebSocket protocol directly. It provides:

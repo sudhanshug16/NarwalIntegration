@@ -93,7 +93,7 @@ def test_station_button_rejects_owned_point_navigation_after_refresh() -> None:
     entity, client = _entity(docked=True, station_active=False)
     client.point_navigation_active = True
 
-    with pytest.raises(HomeAssistantError, match="Point navigation is active"):
+    with pytest.raises(HomeAssistantError, match="Point navigation is already active"):
         asyncio.run(entity.async_press())
 
     client.get_status.assert_awaited_once_with(full_update=True)

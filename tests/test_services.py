@@ -61,6 +61,7 @@ from custom_components.narwal.narwal_client.const import (
     TOPIC_CMD_CANCEL,
     TOPIC_CMD_POINT_NAVI,
     TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+    TOPIC_CMD_VELOCITY_CONTROL,
     ManualControlMode,
     TelecontrolStatus,
     WorkingStatus,
@@ -154,7 +155,10 @@ async def test_prepare_motion_rejects_existing_telecontrol_ownership(
     with pytest.raises(HomeAssistantError, match=message):
         await _async_prepare_motion(SimpleNamespace(client=client))
 
-    client.get_status.assert_awaited_once_with(full_update=True)
+    client.get_status.assert_awaited_once_with(
+        full_update=True,
+        require_full=True,
+    )
 
 
 async def test_prepare_motion_allows_a_docked_stale_pause_overlay() -> None:
@@ -178,7 +182,10 @@ async def test_prepare_motion_allows_a_docked_stale_pause_overlay() -> None:
 
     await _async_prepare_motion(SimpleNamespace(client=client))
 
-    client.get_status.assert_awaited_once_with(full_update=True)
+    client.get_status.assert_awaited_once_with(
+        full_update=True,
+        require_full=True,
+    )
 
 
 async def test_prepare_motion_rejects_observed_unowned_point_navigation() -> None:
@@ -200,6 +207,28 @@ async def test_prepare_motion_rejects_observed_unowned_point_navigation() -> Non
     )
 
     with pytest.raises(HomeAssistantError, match="Point navigation is already active"):
+        await _async_prepare_motion(SimpleNamespace(client=client))
+
+
+async def test_prepare_motion_rejects_working_status_telecontrol() -> None:
+    state = SimpleNamespace(
+        working_status=WorkingStatus.TELECONTROL,
+        is_cleaning=False,
+        is_paused_during_active_task=False,
+        is_returning=False,
+        is_station_active=False,
+    )
+    client = SimpleNamespace(
+        robot_awake=True,
+        state=state,
+        get_status=AsyncMock(),
+        manual_control_active=False,
+        manual_control_state=int(ManualControlMode.OFF),
+        point_navigation_active=False,
+        telecontrol_status=int(TelecontrolStatus.UNSPECIFIED),
+    )
+
+    with pytest.raises(HomeAssistantError, match="Telecontrol is active"):
         await _async_prepare_motion(SimpleNamespace(client=client))
 
 
@@ -585,6 +614,7 @@ def test_drive_stop_during_preflight_invalidates_motion() -> None:
         )
     )
     client._publish_command = AsyncMock()
+    client._stop_manual_control_locked = AsyncMock()
     coordinator = _physical_action_coordinator(
         client=client,
         async_set_updated_data=MagicMock(),
@@ -619,7 +649,13 @@ def test_drive_stop_during_preflight_invalidates_motion() -> None:
     assert [one_call.args[0] for one_call in client.send_command.await_args_list] == [
         TOPIC_CMD_CANCEL
     ]
-    client._publish_command.assert_not_awaited()
+    assert [one_call.args[0] for one_call in client._publish_command.await_args_list] == [
+        TOPIC_CMD_CANCEL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+    ]
 
 
 def test_go_to_requires_current_map_revision_and_clear_floor() -> None:
@@ -773,7 +809,7 @@ def test_point_navigation_ack_blocks_a_station_action_after_startup() -> None:
         item for item in BUTTON_DESCRIPTIONS if item.key == "empty_dustbin"
     )
     station_button = NarwalActionButton(coordinator, description)
-    with pytest.raises(HomeAssistantError, match="Point navigation is active"):
+    with pytest.raises(HomeAssistantError, match="Point navigation is already active"):
         asyncio.run(station_button.async_press())
 
     client.start_point_navigation.assert_awaited_once()
@@ -839,6 +875,7 @@ def test_go_to_stop_during_map_refresh_invalidates_navigation() -> None:
         )
     )
     client._publish_command = AsyncMock()
+    client._stop_manual_control_locked = AsyncMock()
 
     async def stop_during_map_refresh():
         await client.cancel_point_navigation()
@@ -877,13 +914,19 @@ def test_go_to_stop_during_map_refresh_invalidates_navigation() -> None:
     assert topics == [TOPIC_CMD_CANCEL]
     assert TOPIC_CMD_POINT_NAVI not in topics
     assert TOPIC_CMD_SET_MANUAL_CONTROL_MODE not in topics
-    client._publish_command.assert_not_awaited()
+    assert [one_call.args[0] for one_call in client._publish_command.await_args_list] == [
+        TOPIC_CMD_CANCEL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+    ]
 
 
 @pytest.mark.parametrize(
     ("service_name", "client_method"),
     [
-        (SERVICE_STOP_NAVIGATION, "cancel_point_navigation"),
+        (SERVICE_STOP_NAVIGATION, "stop_point_navigation"),
         (SERVICE_STOP_TELECONTROL, "emergency_stop_telecontrol"),
     ],
 )
@@ -893,7 +936,7 @@ def test_telecontrol_stop_services(
 ) -> None:
     hass = MagicMock()
     method = AsyncMock()
-    if client_method == "cancel_point_navigation":
+    if client_method == "stop_point_navigation":
         method.return_value = SimpleNamespace(
             result_code=CommandResult.SUCCESS,
             result_known=True,
@@ -911,7 +954,7 @@ def test_telecontrol_stop_services(
     handler = _registered_handler(hass, service_name)
 
     with patch(
-        "custom_components.narwal._async_single_telecontrol_coordinator",
+        "custom_components.narwal._async_single_narwal_coordinator",
         new=AsyncMock(return_value=coordinator),
     ):
         asyncio.run(handler(SimpleNamespace(data={})))

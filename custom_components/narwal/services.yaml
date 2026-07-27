@@ -148,7 +148,10 @@ go_to:
 
 stop_navigation:
   name: Stop navigation
-  description: Cancel the current autonomous point-navigation task.
+  description: >-
+    Cancel the current autonomous point-navigation task. This remains scoped to
+    navigation; the AX15 app-proven force-end recovery is used only when the
+    robot or integration confirms a point-navigation/recovery state.
   target:
     entity:
       integration: narwal
@@ -157,8 +160,9 @@ stop_navigation:
 stop_telecontrol:
   name: Emergency telecontrol stop
   description: >-
-    Abort client-owned joystick or point navigation, send repeated zero velocity,
-    turn manual mode off, and cancel navigation.
+    Abort client-owned joystick or known point navigation, send repeated zero
+    velocity, and turn manual mode off. Joystick release does not force-stop an
+    unrelated cleaning task.
   target:
     entity:
       integration: narwal

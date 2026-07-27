@@ -13,6 +13,8 @@ import narwal_client.client as client_module
 from narwal_client.client import NarwalClient, NarwalCommandError
 from narwal_client.const import (
     TOPIC_CMD_CANCEL,
+    TOPIC_CMD_FORCE_END,
+    TOPIC_CMD_GET_BASE_STATUS,
     TOPIC_CMD_POINT_NAVI,
     TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
     TOPIC_CMD_VELOCITY_CONTROL,
@@ -168,6 +170,20 @@ def test_point_navigation_natural_completion_requires_seen_active_status() -> No
     assert client.state.point_navigation_target is None
 
 
+def test_pending_force_end_does_not_auto_clear_on_broadcast() -> None:
+    client = NarwalClient("127.0.0.1")
+    client._point_navigation_active = True
+    client._point_navigation_seen_active = True
+    client._point_navigation_stop_confirmation_pending = True
+
+    client._update_from_base_status_broadcast(
+        {"3": {"1": 1, "19": int(TelecontrolStatus.UNSPECIFIED)}},
+        now=10.0,
+    )
+
+    assert client.point_navigation_active
+
+
 def test_point_navigation_can_complete_while_start_ack_is_pending() -> None:
     client = NarwalClient("127.0.0.1")
 
@@ -220,33 +236,86 @@ def test_get_status_synchronizes_manual_and_telecontrol_observations() -> None:
     assert not client.point_navigation_active
 
 
-def test_cancel_point_navigation_uses_typed_task_cancel() -> None:
+def test_full_status_clears_omitted_manual_and_telecontrol_defaults() -> None:
+    client = NarwalClient("127.0.0.1")
+    client._manual_control_state = int(ManualControlMode.JOYSTICK)
+    client._telecontrol_status = int(TelecontrolStatus.POINT_NAVI)
+    client.state.manual_control_state = int(ManualControlMode.JOYSTICK)
+    client.state.telecontrol_status = int(TelecontrolStatus.POINT_NAVI)
+    client.send_command = AsyncMock(
+        return_value=CommandResponse(data={"2": {"3": {"1": 1}}})
+    )
+
+    asyncio.run(client.get_status(full_update=True))
+
+    assert client.manual_control_state == ManualControlMode.OFF
+    assert client.telecontrol_status == TelecontrolStatus.UNSPECIFIED
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {},
+        {"2": {}},
+        {"2": 1},
+        {"2": {"3": {}}},
+    ],
+)
+def test_get_status_require_full_rejects_partial_base_status(
+    data: dict[str, object],
+) -> None:
+    client = NarwalClient("127.0.0.1")
+    client.send_command = AsyncMock(return_value=CommandResponse(data=data))
+
+    with pytest.raises(NarwalCommandError, match="complete base status"):
+        asyncio.run(client.get_status(full_update=True, require_full=True))
+
+
+def test_stop_point_navigation_uses_app_force_end_and_deadman_frames() -> None:
     client = NarwalClient("127.0.0.1")
     client._point_navigation_active = True
     response = _success()
-    client.send_command = AsyncMock(return_value=response)
 
-    result = asyncio.run(client.cancel_point_navigation())
+    async def send_command(topic: str, *_args, **_kwargs) -> CommandResponse:
+        if topic == TOPIC_CMD_FORCE_END:
+            return response
+        assert topic == TOPIC_CMD_GET_BASE_STATUS
+        return CommandResponse(data={"2": {"3": {"1": 1}}})
+
+    client.send_command = AsyncMock(side_effect=send_command)
+    client._publish_command = AsyncMock()
+    client._stop_manual_control_locked = AsyncMock()
+
+    result = asyncio.run(client.stop_point_navigation())
 
     assert result is response
     assert not client.point_navigation_active
     assert client.telecontrol_stop_generation == 1
-    client.send_command.assert_awaited_once_with(
+    assert [call.args[0] for call in client.send_command.await_args_list] == [
+        TOPIC_CMD_FORCE_END,
+        TOPIC_CMD_GET_BASE_STATUS,
+    ]
+    assert [one_call.args[0] for one_call in client._publish_command.await_args_list] == [
         TOPIC_CMD_CANCEL,
-        payload=b"\x08\x03",
-        timeout=10.0,
-    )
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_VELOCITY_CONTROL,
+        TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
+    ]
+    client._stop_manual_control_locked.assert_awaited_once_with()
 
 
-def test_cancel_point_navigation_clears_ownership_on_command_error() -> None:
+def test_cancel_point_navigation_retains_ownership_on_command_error() -> None:
     client = NarwalClient("127.0.0.1")
     client._point_navigation_active = True
     client.send_command = AsyncMock(side_effect=RuntimeError("socket lost"))
+    client._publish_command = AsyncMock()
+    client._stop_manual_control_locked = AsyncMock()
 
-    with pytest.raises(RuntimeError, match="socket lost"):
+    with pytest.raises(NarwalCommandError, match="socket lost"):
         asyncio.run(client.cancel_point_navigation())
 
-    assert not client.point_navigation_active
+    assert client.point_navigation_active
 
 
 @pytest.mark.parametrize(
@@ -634,36 +703,37 @@ async def test_emergency_stop_publishes_raw_safety_frames_before_command_lock() 
         await stop
 
     assert [one_call.args[0] for one_call in client.send_command.await_args_list] == [
-        TOPIC_CMD_CANCEL,
         TOPIC_CMD_SET_MANUAL_CONTROL_MODE,
     ]
 
 
-def test_emergency_stop_attempts_manual_stop_and_typed_navigation_cancel() -> None:
+def test_emergency_stop_attempts_manual_stop_and_app_force_end() -> None:
     client = NarwalClient("127.0.0.1")
     client._manual_control_active = True
     client._point_navigation_active = True
     client._stop_manual_control_locked = AsyncMock()
     client.send_command = AsyncMock(return_value=_success())
+    client._confirm_point_navigation_stopped_locked = AsyncMock()
 
     asyncio.run(client.emergency_stop_telecontrol())
 
     assert client.telecontrol_stop_generation == 1
     client._stop_manual_control_locked.assert_awaited_once_with()
     client.send_command.assert_awaited_once_with(
-        TOPIC_CMD_CANCEL,
-        payload=b"\x08\x03",
-        timeout=10.0,
+        TOPIC_CMD_FORCE_END,
+        timeout=15.0,
     )
     assert not client.point_navigation_active
 
 
 def test_emergency_stop_still_cancels_navigation_after_manual_failure() -> None:
     client = NarwalClient("127.0.0.1")
+    client._point_navigation_active = True
     client._stop_manual_control_locked = AsyncMock(
         side_effect=RuntimeError("manual cleanup failed")
     )
     client.send_command = AsyncMock(return_value=_success())
+    client._confirm_point_navigation_stopped_locked = AsyncMock()
 
     with pytest.raises(
         NarwalCommandError,
@@ -672,10 +742,96 @@ def test_emergency_stop_still_cancels_navigation_after_manual_failure() -> None:
         asyncio.run(client.emergency_stop_telecontrol())
 
     client.send_command.assert_awaited_once_with(
+        TOPIC_CMD_FORCE_END,
+        timeout=15.0,
+    )
+
+
+def test_force_end_keeps_navigation_blocked_until_status_confirmation() -> None:
+    client = NarwalClient("127.0.0.1")
+    client._point_navigation_active = True
+    client.send_command = AsyncMock(return_value=_success())
+    client._stop_manual_control_locked = AsyncMock()
+    client._confirm_point_navigation_stopped_locked = AsyncMock(
+        side_effect=NarwalCommandError("status unavailable")
+    )
+
+    with pytest.raises(NarwalCommandError, match="status unavailable"):
+        asyncio.run(client.stop_point_navigation())
+
+    assert client.point_navigation_active
+    assert client._point_navigation_stop_confirmation_pending
+
+    # A partial broadcast after a failed stop cannot release the motion block;
+    # only a freshly validated full-status confirmation can do that.
+    client._update_from_base_status_broadcast(
+        {"3": {"1": 1, "19": int(TelecontrolStatus.UNSPECIFIED)}},
+        now=10.0,
+    )
+
+    assert client.point_navigation_active
+
+
+def test_force_end_rejects_partial_status_confirmation() -> None:
+    client = NarwalClient("127.0.0.1")
+    client._point_navigation_active = True
+    client._stop_manual_control_locked = AsyncMock()
+
+    async def send_command(topic: str, *_args, **_kwargs) -> CommandResponse:
+        if topic == TOPIC_CMD_FORCE_END:
+            return _success()
+        assert topic == TOPIC_CMD_GET_BASE_STATUS
+        return CommandResponse(data={"2": {}})
+
+    client.send_command = AsyncMock(side_effect=send_command)
+
+    with pytest.raises(NarwalCommandError, match="full status"):
+        asyncio.run(client.stop_point_navigation())
+
+    assert client.point_navigation_active
+
+
+def test_emergency_telecontrol_status_alone_does_not_force_end() -> None:
+    client = NarwalClient("127.0.0.1")
+    client.state.working_status = client_module.WorkingStatus.TELECONTROL
+    client._stop_manual_control_locked = AsyncMock()
+    client.send_command = AsyncMock(return_value=_success())
+
+    asyncio.run(client.emergency_stop_telecontrol())
+
+    client.send_command.assert_not_awaited()
+    client._stop_manual_control_locked.assert_awaited_once_with()
+
+
+def test_stop_navigation_does_not_force_end_an_unrelated_clean() -> None:
+    client = NarwalClient("127.0.0.1")
+    client.state.working_status = client_module.WorkingStatus.CLEANING
+    client.send_command = AsyncMock(return_value=_success())
+    client._publish_command = AsyncMock()
+
+    result = asyncio.run(client.stop_point_navigation())
+
+    assert result.success
+    client.send_command.assert_awaited_once_with(
         TOPIC_CMD_CANCEL,
         payload=b"\x08\x03",
         timeout=10.0,
     )
+
+
+def test_navigation_frame_timeout_retains_motion_block_until_stopped() -> None:
+    client = NarwalClient("127.0.0.1")
+
+    async def send_command(*_args, **kwargs):
+        kwargs["before_send"]()
+        raise NarwalCommandError("point-navigation response timed out")
+
+    client.send_command = AsyncMock(side_effect=send_command)
+
+    with pytest.raises(NarwalCommandError, match="timed out"):
+        asyncio.run(client.start_point_navigation(1.5, -2.5))
+
+    assert client.point_navigation_active
 
 
 @pytest.mark.parametrize(
