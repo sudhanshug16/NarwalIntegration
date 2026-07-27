@@ -89,6 +89,7 @@ class NarwalControlCard extends HTMLElement {
         .map-stage.disabled { opacity: .72; }
         .map-image { width: 100%; height: auto; display: block; user-select: none; -webkit-user-drag: none; }
         .map-placeholder { display: grid; min-height: 180px; place-items: center; padding: 18px; color: var(--secondary-text-color); text-align: center; }
+        .map-placeholder[hidden] { display: none; }
         .room-layer { position: absolute; inset: 0; pointer-events: none; }
         .room-marker { position: absolute; transform: translate(-50%, -50%); pointer-events: auto; max-width: 42%; border: 1px solid rgba(255,255,255,.8); border-radius: 999px; padding: 3px 7px; color: #fff; background: rgba(20,20,20,.64); font: inherit; font-size: .76rem; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px #000; }
         .room-marker.selected { background: var(--primary-color); border-color: var(--primary-color); }
