@@ -127,7 +127,7 @@ go_to:
         number:
           min: 0
           max: 0.999999
-          step: 0.000001
+          step: any
           mode: box
     y:
       name: Vertical position
@@ -137,7 +137,7 @@ go_to:
         number:
           min: 0
           max: 0.999999
-          step: 0.000001
+          step: any
           mode: box
     map_revision:
       name: Map revision
