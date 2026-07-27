@@ -1,0 +1,196 @@
+clean_rooms:
+  name: Clean rooms
+  description: Clean selected rooms with explicit vacuum and mop settings.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    rooms:
+      name: Rooms
+      description: Narwal room IDs to clean, in order, or "all" for all current map rooms.
+      required: true
+      selector:
+        object:
+    mode:
+      name: Mode
+      default: vacuum_and_mop
+      selector:
+        select:
+          options:
+            - vacuum
+            - mop
+            - vacuum_then_mop
+            - vacuum_and_mop
+    suction:
+      name: Suction
+      default: standard
+      selector:
+        select:
+          options:
+            - ai
+            - quiet
+            - standard
+            - strong
+            - super_powerful
+            - ultra_powerful
+    water:
+      name: Water
+      default: normal
+      selector:
+        select:
+          options:
+            - dry
+            - normal
+            - wet
+    mop_strength:
+      name: Mop strength
+      default: normal
+      selector:
+        select:
+          options:
+            - normal
+            - high
+    passes:
+      name: Passes
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: box
+    route:
+      name: Route
+      selector:
+        select:
+          options:
+            - standard
+            - meticulous
+
+drive:
+  name: Drive
+  description: >-
+    Send one bounded joystick pulse. Motion stops automatically after 100–500
+    milliseconds, followed by repeated zero-velocity commands and manual mode off.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    linear_velocity:
+      name: Linear velocity
+      description: Forward or reverse command from -10 to 10.
+      required: true
+      selector:
+        number:
+          min: -10
+          max: 10
+          step: 1
+          mode: slider
+    angular_velocity:
+      name: Angular velocity
+      description: Left or right turn command from -10 to 10.
+      required: true
+      selector:
+        number:
+          min: -10
+          max: 10
+          step: 1
+          mode: slider
+    duration_ms:
+      name: Duration
+      description: Dead-man pulse duration in milliseconds.
+      default: 250
+      selector:
+        number:
+          min: 100
+          max: 500
+          step: 50
+          unit_of_measurement: ms
+          mode: slider
+
+go_to:
+  name: Go to map point
+  description: >-
+    Navigate to a clear point on the current Narwal map. Coordinates use the
+    unrotated camera image from the top-left, normalized from 0 to just below 1.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    x:
+      name: Horizontal position
+      description: Normalized horizontal map coordinate, from 0 (left) to below 1 (right).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 0.999999
+          step: any
+          mode: box
+    y:
+      name: Vertical position
+      description: Normalized vertical map coordinate, from 0 (top) to below 1 (bottom).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 0.999999
+          step: any
+          mode: box
+    map_revision:
+      name: Map revision
+      description: Current navigation_map_revision attribute from the Narwal map camera.
+      required: true
+      selector:
+        text:
+
+stop_navigation:
+  name: Stop navigation
+  description: >-
+    Cancel the current autonomous point-navigation task. This remains scoped to
+    navigation; the AX15 app-proven force-end recovery is used only when the
+    robot or integration confirms a point-navigation/recovery state.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+
+stop_telecontrol:
+  name: Emergency telecontrol stop
+  description: >-
+    Abort client-owned joystick or known point navigation, send repeated zero
+    velocity, and turn manual mode off. Joystick release does not force-stop an
+    unrelated cleaning task.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+
+set_schedule_enabled:
+  name: Enable or disable schedule
+  description: >-
+    Enable or disable an existing Narwal schedule while preserving its exact
+    cleaning plan, timing, and unknown firmware fields. The integration reads
+    the schedule back and rejects an unconfirmed update.
+  target:
+    entity:
+      integration: narwal
+      domain: vacuum
+  fields:
+    task_id:
+      name: Schedule task ID
+      description: Task ID shown by the Narwal clean schedules diagnostic sensor.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 4294967295
+          step: 1
+          mode: box
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean:

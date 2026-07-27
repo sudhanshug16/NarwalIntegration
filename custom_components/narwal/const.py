@@ -27,15 +27,50 @@ CONF_PRODUCT_KEY = "product_key"
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,
     Platform.SENSOR,
+    Platform.SELECT,
     Platform.BINARY_SENSOR,
     Platform.CAMERA,
+    Platform.BUTTON,
+    Platform.SWITCH,
+    Platform.NUMBER,
 ]
 
-FAN_SPEED_MAP: dict[str, FanLevel] = {
-    "quiet": FanLevel.QUIET,
-    "normal": FanLevel.NORMAL,
-    "strong": FanLevel.STRONG,
-    "max": FanLevel.MAX,
+CONF_SHOW_ROOM_LABELS = "show_room_labels"
+CONF_SHOW_FURNITURE = "show_furniture"
+CONF_SHOW_FURNITURE_LABELS = "show_furniture_labels"
+CONF_MAP_ROTATION = "map_rotation"
+CONF_MAP_ZOOM = "map_zoom"
+SERVICE_CLEAN_ROOMS = "clean_rooms"
+SERVICE_DRIVE = "drive"
+SERVICE_GO_TO = "go_to"
+SERVICE_STOP_NAVIGATION = "stop_navigation"
+SERVICE_STOP_TELECONTROL = "stop_telecontrol"
+SERVICE_SET_SCHEDULE_ENABLED = "set_schedule_enabled"
+
+MAP_OPTION_DEFAULTS: dict[str, bool] = {
+    CONF_SHOW_ROOM_LABELS: True,
+    CONF_SHOW_FURNITURE: False,
+    CONF_SHOW_FURNITURE_LABELS: False,
 }
 
-FAN_SPEED_LIST: list[str] = list(FAN_SPEED_MAP.keys())
+MAP_ROTATION_DEFAULT = 0
+MAP_ZOOM_DEFAULT = 1.0
+
+# HA fan_speed labels for the live clean/set_fan_level command. Its
+# SweepFanLevel enum stops at DEEP; SUPER remains available to clean settings.
+_FAN_SPEED_CANONICAL: dict[str, FanLevel] = {
+    "Quiet": FanLevel.MUTE,
+    "Standard": FanLevel.NORMAL,
+    "Strong": FanLevel.STRONG,
+    "Super powerful": FanLevel.DEEP,
+}
+
+FAN_SPEED_LIST: list[str] = list(_FAN_SPEED_CANONICAL)
+
+# FAN_SPEED_MAP also accepts the original lowercase fan_speed values (quiet/normal/strong/max) so existing automations keep working; these aliases are not offered in FAN_SPEED_LIST.
+FAN_SPEED_MAP: dict[str, FanLevel] = _FAN_SPEED_CANONICAL | {
+    "quiet": FanLevel.MUTE,
+    "normal": FanLevel.NORMAL,
+    "strong": FanLevel.STRONG,
+    "max": FanLevel.DEEP,
+}

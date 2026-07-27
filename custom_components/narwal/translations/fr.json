@@ -3,10 +3,11 @@
     "step": {
       "user": {
         "title": "Connexion à l’aspirateur Narwal",
-        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal.",
+        "description": "Entrez l’adresse IP de votre robot aspirateur Narwal et sélectionnez son modèle.",
         "data": {
           "host": "Adresse IP",
-          "port": "Port"
+          "port": "Port",
+          "model": "Modèle"
         }
       }
     },
@@ -31,8 +32,57 @@
       "cleaning_time": {
         "name": "Temps de nettoyage"
       },
+      "task_progress": {
+        "name": "Progress"
+      },
+      "current_room": {
+        "name": "Current room"
+      },
+      "station_task": {
+        "name": "Station task",
+        "state": {
+          "emptying_dustbin": "Emptying dustbin",
+          "washing_mop": "Washing mop",
+          "drying_mop": "Drying mop",
+          "drying_or_disinfecting": "Drying / disinfecting",
+          "station_active": "Station active"
+        }
+      },
+      "dry_mop_remaining_time": {
+        "name": "Drying time left"
+      },
       "firmware_version": {
         "name": "Version du firmware"
+      },
+      "capabilities": {
+        "name": "Fonctionnalités annoncées"
+      },
+      "config_snapshot": {
+        "name": "Instantané de configuration"
+      },
+      "current_clean_task": {
+        "name": "Tâche de nettoyage actuelle"
+      },
+      "protocol_profile": {
+        "name": "Profil du protocole"
+      },
+      "clean_plans": {
+        "name": "Plans de nettoyage"
+      },
+      "clean_schedules": {
+        "name": "Programmes de nettoyage"
+      },
+      "consumable_categories": {
+        "name": "Catégories de consommables"
+      },
+      "map_inventory": {
+        "name": "Inventaire des cartes"
+      },
+      "device_metadata": {
+        "name": "Métadonnées du firmware, de la langue et de la voix"
+      },
+      "clean_timeline": {
+        "name": "Chronologie du nettoyage"
       },
       "charging_state": {
         "name": "Charge",
@@ -40,6 +90,20 @@
           "charging": "En charge",
           "fully_charged": "Chargé complètement",
           "not_charging": "Pas en charge"
+        }
+      },
+      "task_status": {
+        "name": "État",
+        "state": {
+          "cleaning": "Nettoyage",
+          "returning": "Retour",
+          "paused": "En pause",
+          "station_active": "Station active",
+          "telecontrol": "Contrôle manuel",
+          "docked": "Stationné",
+          "idle": "Inactif",
+          "error": "Erreur",
+          "unknown": "Inconnu"
         }
       }
     },
@@ -50,6 +114,155 @@
           "on": "Stationné",
           "off": "Non stationné"
         }
+      },
+      "charging": {
+        "name": "Charge"
+      }
+    },
+    "switch": {
+      "show_room_labels": {
+        "name": "Afficher les noms des pièces"
+      },
+      "show_furniture": {
+        "name": "Afficher les meubles"
+      },
+      "show_furniture_labels": {
+        "name": "Afficher les noms des meubles"
+      },
+      "child_lock": {
+        "name": "Verrouillage enfant"
+      },
+      "clean_carpets": {
+        "name": "Nettoyer les tapis"
+      },
+      "smart_clean_detection": {
+        "name": "Détection de nettoyage intelligent"
+      },
+      "pet_mode": {
+        "name": "Mode animaux"
+      },
+      "smart_deep_clean": {
+        "name": "Nettoyage en profondeur intelligent"
+      },
+      "moisture_proof_mop_pad": {
+        "name": "Protection anti-humidité des serpillières"
+      },
+      "dust_collection": {
+        "name": "Collecte de la poussière"
+      },
+      "smart_dust_collection": {
+        "name": "Collecte intelligente de la poussière"
+      },
+      "return_to_main_map": {
+        "name": "Retour à la carte principale"
+      },
+      "quiet_dust_collection": {
+        "name": "Collecte silencieuse de la poussière"
+      },
+      "dry_robot_bag": {
+        "name": "Séchage du sac à poussière du robot"
+      },
+      "hot_water_wash": {
+        "name": "Lavage des serpillières à l’eau chaude"
+      },
+      "massive_dirty_deep_clean": {
+        "name": "Nettoyage en profondeur des saletés importantes"
+      },
+      "speech_control": {
+        "name": "Commande vocale"
+      },
+      "off_dock_auto_poweroff": {
+        "name": "Arrêt automatique hors station"
+      },
+      "ai_voice_effects": {
+        "name": "Effets vocaux IA"
+      },
+      "ai_waiting_effects": {
+        "name": "Effets d’attente IA"
+      },
+      "all_things_recognition": {
+        "name": "Reconnaissance de tous les objets"
+      },
+      "precious_item_guard": {
+        "name": "Protection des objets précieux"
+      }
+    },
+    "select": {
+      "mode": {
+        "name": "Mode"
+      },
+      "suction": {
+        "name": "Aspiration"
+      },
+      "water": {
+        "name": "Eau"
+      },
+      "scrub": {
+        "name": "Récurage"
+      },
+      "route": {
+        "name": "Trajet"
+      },
+      "passes": {
+        "name": "Passages"
+      },
+      "robot_language": {
+        "name": "Langue du robot"
+      },
+      "dry_mop_strength": {
+        "name": "Puissance de séchage des serpillières"
+      },
+      "mop_wash_frequency": {
+        "name": "Fréquence de lavage des serpillières"
+      },
+      "carpet_behavior": {
+        "name": "Comportement sur tapis"
+      },
+      "station_clean_mode": {
+        "name": "Mode de nettoyage de la station"
+      },
+      "robot_clean_mode": {
+        "name": "Mode de nettoyage du robot"
+      },
+      "obstacle_avoidance": {
+        "name": "Évitement des obstacles"
+      },
+      "corner_cleaning": {
+        "name": "Nettoyage des coins"
+      },
+      "carpet_clean_priority": {
+        "name": "Priorité de nettoyage des tapis"
+      },
+      "carpet_deep_clean": {
+        "name": "Nettoyage en profondeur des tapis"
+      },
+      "station_light": {
+        "name": "Éclairage de la station"
+      }
+    },
+    "number": {
+      "robot_volume": {
+        "name": "Volume du robot"
+      }
+    },
+    "button": {
+      "empty_dustbin": {
+        "name": "Empty dustbin"
+      },
+      "wash_mop": {
+        "name": "Wash mop"
+      },
+      "dry_mop": {
+        "name": "Dry mop"
+      },
+      "wash_and_dry_mop": {
+        "name": "Wash and dry mop"
+      },
+      "dry_dust_bin": {
+        "name": "Dry and disinfect dust bin"
+      },
+      "dry_dock_bag": {
+        "name": "Dry and disinfect dock bag"
       }
     }
   }

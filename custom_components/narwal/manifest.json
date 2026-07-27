@@ -1,13 +1,13 @@
 {
   "domain": "narwal",
-  "name": "Narwal Flow Robot Vacuum",
-  "codeowners": ["@sjmotew"],
+  "name": "Narwal Robot Vacuum",
+  "codeowners": ["@sudhanshug16", "@sjmotew"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/sjmotew/NarwalIntegration",
+  "documentation": "https://github.com/sudhanshug16/NarwalIntegration",
   "integration_type": "device",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/sjmotew/NarwalIntegration/issues",
+  "issue_tracker": "https://github.com/sudhanshug16/NarwalIntegration/issues",
   "requirements": ["bbpb>=1.4.0", "Pillow>=9.0.0"],
-  "version": "1.0.0"
+  "version": "1.1.0-beta.5"
 }

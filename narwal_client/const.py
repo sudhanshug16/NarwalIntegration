@@ -24,6 +24,7 @@ KNOWN_PRODUCT_KEYS = [
     # Confirmed working (local WebSocket)
     "QoEsI5qYXO",  # AX12 — Narwal Flow (primary, confirmed)
     "QxMSPG6VSO",  # Narwal Flow 2 (confirmed working via local WebSocket)
+    "iSuVlI1If2",  # Narwal Flow 2 alternate key (confirmed working locally)
     "DrzDKQ0MU8",   # CX4  — Freo Z10 Ultra (confirmed by @irekkl-maker)
     # Confirmed cloud-only (port 9002 open but no local broadcasts)
     "BYWBPqSxeC",   # CX7  — Freo Z Ultra (cloud-only, confirmed by @gabrielozcomidi)
@@ -51,6 +52,8 @@ KNOWN_PRODUCT_KEYS = [
     "cUlfJN5JYP",   # Unknown model (APK, contributed by @northwestsupra)
 ]
 
+LEGACY_ROOM_CLEAN_PRODUCT_KEYS = {"QoEsI5qYXO"}
+
 # --- Status topics (robot → client, field 4 / 0x22 frames) ---
 TOPIC_WORKING_STATUS = "status/working_status"
 TOPIC_ROBOT_BASE_STATUS = "status/robot_base_status"
@@ -58,7 +61,11 @@ TOPIC_UPGRADE_STATUS = "upgrade/upgrade_status"
 TOPIC_DOWNLOAD_STATUS = "status/download_status"
 TOPIC_DISPLAY_MAP = "map/display_map"
 TOPIC_TIMELINE_STATUS = "status/time_line_status"
+TOPIC_POINT_NAVI_PLAN_TRAJ = "status/point_navi_plan_traj"
 TOPIC_PLANNING_DEBUG = "developer/planning_debug_info"
+TOPIC_ROBOT_STATUS = "status/robot"
+TOPIC_ROBOT_CURRENT_STATUS = "status/robot/current"
+TOPIC_ROBOT_TASK_STATUS = "robot/task/status"
 
 # --- Command topics (client → robot, confirmed working) ---
 # Common
@@ -68,6 +75,18 @@ TOPIC_CMD_SHUTDOWN = "common/shutdown"
 TOPIC_CMD_GET_DEVICE_INFO = "common/get_device_info"
 TOPIC_CMD_GET_FEATURE_LIST = "common/get_feature_list"
 TOPIC_CMD_GET_BASE_STATUS = "status/get_device_base_status"
+TOPIC_CMD_GET_CONFIG = "config/get"
+TOPIC_CMD_SET_CONFIG = "config/set"
+TOPIC_CMD_GET_CURRENT_CLEAN_PLAN = "clean/cur_plan/get"
+TOPIC_CMD_GET_CLEAN_PLANS = "clean/plan/get"
+TOPIC_CMD_GET_CLEAN_SCHEDULES = "schedule/clean_schedule/get"
+TOPIC_CMD_UPDATE_CLEAN_SCHEDULE = "schedule/clean_schedule/update"
+TOPIC_CMD_GET_CONSUMABLE_INFO = "consumable/get_consumable_info"
+TOPIC_CMD_GET_FIRMWARE_VERSION = "common/upgrade/get_firmware_version"
+TOPIC_CMD_GET_LANGUAGE = "config/language/get"
+TOPIC_CMD_GET_SUPPORTED_LANGUAGES = "config/supported_languages/get"
+TOPIC_CMD_GET_CURRENT_VOICE_INFO = "config/language/get_current_voice_info"
+TOPIC_CMD_GET_CLEAN_TIMELINE = "info/get_clean_time_line"
 
 # Task control
 TOPIC_CMD_PAUSE = "task/pause"
@@ -78,20 +97,34 @@ TOPIC_CMD_CANCEL = "task/cancel"
 # Supply/dock
 TOPIC_CMD_RECALL = "supply/recall"
 TOPIC_CMD_WASH_MOP = "supply/wash_mop"
+TOPIC_CMD_WASH_MOP_BY_ROBOT_STATUS = "supply/wash_mop_by_robot_status"
 TOPIC_CMD_DRY_MOP = "supply/dry_mop"
 TOPIC_CMD_DUST_GATHERING = "supply/dust_gathering"
+TOPIC_CMD_WASH_AND_DRY_MOP = "supply/wash_and_dry_mop"
+TOPIC_CMD_DRY_DUST_BAG = "supply/dry_dust_bag"
+TOPIC_CMD_DRY_STATION_BAG = "supply/dry_station_bag"
 
 # Cleaning (Pita protocol — correct for AX12)
-TOPIC_CMD_START_CLEAN = "clean/plan/start"  # whole-house clean (empty payload)
-TOPIC_CMD_START_CLEAN_LEGACY = "clean/start_clean"  # does NOT work from STANDBY
+TOPIC_CMD_PLAN_START = "clean/plan/start"  # whole-house clean (empty payload)
+TOPIC_CMD_CLEAN_TASK = "clean/start_clean"  # room/zone CleanTask; only works docked
 TOPIC_CMD_EASY_CLEAN = "clean/easy_clean/start"
 TOPIC_CMD_SET_FAN_LEVEL = "clean/set_fan_level"
 TOPIC_CMD_SET_MOP_HUMIDITY = "clean/set_mop_humidity"
 TOPIC_CMD_GET_CURRENT_TASK = "clean/current_clean_task/get"
+TOPIC_CMD_GET_CLEAN_PROGRESS_INFO = "info/get_clean_progress_info"
+TOPIC_CMD_GET_DRY_MOP_REMAIN_TIME = "supply/get_dry_mop_remain_time"
+TOPIC_CMD_GET_ROBOT_TASK_STATUS = "robot/task/status/get"
 
 # Map
 TOPIC_CMD_GET_MAP = "map/get_map"
 TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
+TOPIC_CMD_GET_EDITABLE_MAP = "map/get_editable_map"
+TOPIC_CMD_CHECK_MAP_UPDATE_INFO = "map/check_map_update_info"
+
+# Telecontrol
+TOPIC_CMD_SET_MANUAL_CONTROL_MODE = "telecontrol/set_manual_control_mode"
+TOPIC_CMD_VELOCITY_CONTROL = "telecontrol/velocity_control"
+TOPIC_CMD_POINT_NAVI = "telecontrol/point_navi"
 
 # Camera (developer commands)
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
@@ -141,6 +174,29 @@ class CommandResult(IntEnum):
     SUCCESS = 1
     NOT_APPLICABLE = 2  # e.g., set_fan_level when not cleaning
     CONFLICT = 3  # e.g., recall when already recalling
+    NOT_READY = 4  # clean/start_clean while not docked (robot in STANDBY)
+
+
+class ManualControlMode(IntEnum):
+    """Official app manual-control modes."""
+
+    OFF = 0
+    JOYSTICK = 1
+    CLEAN_DEFAULT = 2
+    SWEEP_MUTE = 3
+    SWEEP_NORMAL = 4
+    SWEEP_STRONG = 5
+    SWEEP_DEEP = 6
+    SWEEP_SUPER = 7
+
+
+class TelecontrolStatus(IntEnum):
+    """RobotTaskStatus field 19 telecontrol state."""
+
+    UNSPECIFIED = 0
+    JOYSTICK = 1
+    CLEAN_DEFAULT = 2
+    POINT_NAVI = 3
 
 
 class WorkingStatus(IntEnum):
@@ -149,11 +205,15 @@ class WorkingStatus(IntEnum):
     Values confirmed via live WebSocket monitoring:
       1  = STANDBY (idle, transition state between cleaning and docked)
       2  = DOCKED_V2 (on dock; confirmed v01.07.23.00 while charging at 10-36%)
+      3  = CLEANING_V2 (active room clean; confirmed on Flow 2 v01.07.23)
       4  = CLEANING (plan-based start; also stays 4 while returning to dock on older FW)
       5  = CLEANING_ALT (observed live: robot was physically stuck when reporting 5)
+      7  = CLEANING_FLOW2 (active cleaning on Flow 2 v01.07.10.33)
       10 = DOCKED (on dock, charging)
       14 = CHARGED (on dock, fully charged)
       19 = TASK_COMPLETED (transitional: scheduled task finished, returning to base)
+      21 = TELECONTROL (live AX15 point-navigation/joystick transition;
+           matches RobotTaskStatus.TaskType.TELECONTROL in the Narwal app)
 
     Field 3 sub-fields (confirmed live):
       3.2  = 1 means PAUSED (overlay on CLEANING state)
@@ -168,31 +228,73 @@ class WorkingStatus(IntEnum):
     UNKNOWN = 0
     STANDBY = 1       # idle / transition state
     DOCKED_V2 = 2     # on dock (v01.07.23.00+ — replaces DOCKED=10/CHARGED=14 from older FW)
+    CLEANING_V2 = 3   # active cleaning on Flow 2 firmware v01.07.23+
     CLEANING = 4      # active cleaning (stays 4 even while returning to dock)
     CLEANING_ALT = 5  # cleaning — observed when robot was physically stuck; may indicate error/stuck state
+    CLEANING_FLOW2 = 7  # active cleaning on Flow 2 v01.07.10.33
     DOCKED = 10       # on dock (does NOT reliably indicate charging vs charged)
     CHARGED = 14      # on dock (reported before 100% — use battery_level for charge state)
     TASK_COMPLETED = 19  # transitional: task finished, robot returning to base (#41)
     # PLACEHOLDER: error state value not yet observed live.
     # Trigger a real error (e.g., pick up robot mid-clean) to discover the value.
+    TELECONTROL = 21  # app TaskType.TELECONTROL; blocks new movement until OFF
     ERROR = 99
 
 
-class FanLevel(IntEnum):
-    """Suction fan speed levels (SweepMode from APK)."""
+ACTIVE_CLEANING_STATUSES = frozenset(
+    {
+        WorkingStatus.CLEANING_V2,
+        WorkingStatus.CLEANING,
+        WorkingStatus.CLEANING_ALT,
+        WorkingStatus.CLEANING_FLOW2,
+    }
+)
 
-    QUIET = 0
-    NORMAL = 1
-    STRONG = 2
-    MAX = 3
+
+class FanLevel(IntEnum):
+    """CleanParam suction level (CleanTask.pbenum FanLevel)."""
+
+    UNSPECIFIED = 0
+    MUTE = 1
+    QUIET = MUTE
+    NORMAL = 2
+    STRONG = 3
+    DEEP = 4
+    MAX = DEEP
+    SUPER = 5
 
 
 class MopHumidity(IntEnum):
-    """Mop wetness levels."""
+    """Water volume. CleanParam tag 4 and the live clean/set_mop_humidity command share these ints."""
 
-    DRY = 0
+    UNSPECIFIED = 0
+    DRY = 1
+    NORMAL = 2
+    WET = 3
+
+
+class MopStrengthLevel(IntEnum):
+    """Mop scrub intensity (CleanParam tag 3)."""
+
+    UNSPECIFIED = 0
     NORMAL = 1
-    WET = 2
+    HIGH = 2
+
+
+class CleaningRoute(IntEnum):
+    """Cleaning route overlap level (CleanParam tag 8)."""
+
+    STANDARD = 1
+    METICULOUS = 2
+
+
+class WorkMode(IntEnum):
+    """Clean work mode — the app's robot_work_mode_* selector (Vacuum / Mop / Vacuum then mop / Vacuum and mop). Its value IS the CleanTask.taskType the robot executes; the per-item CleanParam.mode (the proto's own CleanMode enum) is derived separately in client._WORK_MODE_PARAM."""
+
+    VACUUM = 1
+    MOP = 2
+    VACUUM_THEN_MOP = 3
+    VACUUM_AND_MOP = 4
 
 
 # robot_base_status field numbers

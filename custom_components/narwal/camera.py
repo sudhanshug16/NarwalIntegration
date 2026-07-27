@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import math
 import time
+from dataclasses import dataclass, replace
+from typing import Any
 
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant, callback
@@ -14,7 +17,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import NarwalConfigEntry
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
-from .narwal_client.const import WorkingStatus
+from .narwal_client.const import ACTIVE_CLEANING_STATUSES, WorkingStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +35,65 @@ _DEBUG_VIEW = False
 _DEBUG_CANVAS_SIZE = 600  # pixels
 _DEBUG_TRAIL_MAX = _TRAIL_MAX_POINTS
 _DEBUG_RECORD_INTERVAL = _TRAIL_RECORD_INTERVAL
+
+
+@dataclass(frozen=True, slots=True)
+class _DisplaySnapshot:
+    """Immutable display coordinates captured with a render request."""
+
+    robot_x: float
+    robot_y: float
+    robot_heading: float
+    dock_ref_x: float
+    dock_ref_y: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderRequest:
+    """One self-consistent camera render input.
+
+    Coordinator broadcasts may arrive while PIL is rendering in an executor.
+    Retaining the exact map, robot pose, path, and trail here prevents a PNG
+    from combining one map's base with another map's overlays.
+    """
+
+    display: _DisplaySnapshot | None
+    cache_key: tuple[object, ...]
+    static_map: Any | None
+    trail: tuple[tuple[float, float], ...]
+    navigation_path: tuple[tuple[float, float], ...]
+    navigation_target: tuple[float, float] | None
+    debug_dock: tuple[float, float] | None = None
+    debug_viewport: tuple[float, float, float, float] | None = None
+
+
+def _snapshot_display(display) -> _DisplaySnapshot | None:
+    """Copy just the display fields used by the renderer."""
+    if display is None:
+        return None
+    return _DisplaySnapshot(
+        robot_x=display.robot_x,
+        robot_y=display.robot_y,
+        robot_heading=display.robot_heading,
+        dock_ref_x=display.dock_ref_x,
+        dock_ref_y=display.dock_ref_y,
+    )
+
+
+def _static_map_cache_key(static_map) -> object:
+    """Return the navigation identity used for both base and overlay caches."""
+    revision = static_map.navigation_revision()
+    if revision is not None:
+        return revision
+    # Invalid legacy geometry cannot produce a navigation revision. A new
+    # MapData instance must still invalidate the rendered base rather than
+    # reusing an image from a different payload.
+    return (
+        "legacy-map-object",
+        id(static_map),
+        static_map.created_at,
+        static_map.edit_version,
+    )
 
 
 async def async_setup_entry(
@@ -58,12 +120,28 @@ class NarwalMapCamera(NarwalEntity, Camera):
         device_id = coordinator.config_entry.data["device_id"]
         self._attr_unique_id = f"{device_id}_map"
         self._cached_image: bytes | None = None
+        self._cached_navigation_revision: str | None = None
+        self._cached_map_width: int | None = None
+        self._cached_map_height: int | None = None
+        # These describe the exact PNG in ``_cached_image``.  The frontend
+        # must never combine navigation metadata from a newer map with a
+        # throttled older bitmap.
+        self._cached_navigation_image_width: int | None = None
+        self._cached_navigation_image_height: int | None = None
+        self._cached_room_markers: tuple[dict[str, int | str | float], ...] = ()
+        self._cached_room_markers_revision: object | None = None
         self._cache_key: tuple = ()
         self._last_render_time: float = 0.0
         self._render_count: int = 0
         # Cached base map (PIL Image) — only re-rendered when static map changes
         self._base_map_image = None  # PIL Image or None
-        self._base_map_ts: int = 0  # created_at of the static map used for base
+        self._base_map_revision: object | None = None
+        # A render is CPU-heavy and its base/overlay must agree on one map
+        # revision. Coalesce broadcasts into one serialized worker instead of
+        # allowing executor jobs to race over the shared base-image cache.
+        self._render_lock = asyncio.Lock()
+        self._render_task: asyncio.Task[None] | None = None
+        self._pending_render: _RenderRequest | None = None
         # Trail state — accumulated grid-coordinate positions during cleaning
         self._trail: list[tuple[float, float]] = []
         self._last_trail_record: float = 0.0
@@ -91,9 +169,35 @@ class NarwalMapCamera(NarwalEntity, Camera):
         )
 
     @property
-    def extra_state_attributes(self) -> dict[str, str | int]:
-        """Expose render count so HA detects state changes for MJPEG refresh."""
-        return {"render_count": self._render_count}
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose map identity needed by revision-locked navigation actions."""
+        return {
+            "render_count": self._render_count,
+            # This must describe the PNG returned by async_camera_image, not a
+            # newer map that has not survived the render throttle yet.
+            "navigation_map_revision": self._cached_navigation_revision,
+            "map_width": self._cached_map_width,
+            "map_height": self._cached_map_height,
+            "navigation_image_width": getattr(
+                self, "_cached_navigation_image_width", None
+            ),
+            "navigation_image_height": getattr(
+                self, "_cached_navigation_image_height", None
+            ),
+            "navigation_coordinates": "normalized_image_top_left",
+            # Room markers are floor-only centroids derived from the exact raw
+            # grid that produced the cached PNG.  They are presentation data;
+            # room cleaning still sends only their validated Narwal room IDs.
+            "room_markers": list(getattr(self, "_cached_room_markers", ())),
+            "manual_control_active": self.coordinator.client.manual_control_active,
+            "manual_control_state": self.coordinator.client.manual_control_state,
+            "telecontrol_status": self.coordinator.client.telecontrol_status,
+            "working_status": int(self.coordinator.client.state.working_status),
+            "point_navigation_active": self.coordinator.client.point_navigation_active,
+            "point_navigation_path_points": len(
+                self.coordinator.client.state.point_navigation_path
+            ),
+        }
 
     def _reset_debug_trail(self) -> None:
         """Clear trail and viewport for a new cleaning session."""
@@ -154,17 +258,17 @@ class NarwalMapCamera(NarwalEntity, Camera):
 
         # Detect cleaning session transitions — clear trail on new session
         current_status = state.working_status
-        was_cleaning = self._last_cleaning_status in (
-            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
-        )
-        is_cleaning = current_status in (
-            WorkingStatus.CLEANING, WorkingStatus.CLEANING_ALT,
+        was_cleaning = self._last_cleaning_status in ACTIVE_CLEANING_STATUSES
+        is_cleaning = (
+            current_status in ACTIVE_CLEANING_STATUSES and not state.is_docked
         )
         if is_cleaning and not was_cleaning:
             _LOGGER.info("New cleaning session — clearing trail and vision obstacles")
             self._reset_trail()
         if current_status != WorkingStatus.UNKNOWN:
-            self._last_cleaning_status = current_status
+            self._last_cleaning_status = (
+                current_status if not state.is_docked else WorkingStatus.STANDBY
+            )
 
         if _DEBUG_VIEW:
             if not display or (display.robot_x == 0.0 and display.robot_y == 0.0):
@@ -172,6 +276,24 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 return
             self._record_debug_position(display.robot_x, display.robot_y)
             new_key = (display.robot_x, display.robot_y, display.robot_heading)
+            viewport = None
+            if self._vp_initialized:
+                viewport = (
+                    self._vp_min_x,
+                    self._vp_min_y,
+                    self._vp_max_x,
+                    self._vp_max_y,
+                )
+            request = _RenderRequest(
+                display=_snapshot_display(display),
+                cache_key=new_key,
+                static_map=None,
+                trail=tuple(self._trail),
+                navigation_path=(),
+                navigation_target=None,
+                debug_dock=self._dock_pos,
+                debug_viewport=viewport,
+            )
         else:
             static_map = state.map_data
             if not static_map or not static_map.compressed_map:
@@ -189,50 +311,105 @@ class NarwalMapCamera(NarwalEntity, Camera):
                 if grid_pos is not None:
                     self._record_trail_position(grid_pos[0], grid_pos[1])
 
-            static_ts = static_map.created_at or 0
+            static_revision = _static_map_cache_key(static_map)
             trail_len = len(self._trail)
+            navigation_path = state.point_navigation_path
+            navigation_key = (
+                len(navigation_path),
+                navigation_path[-1] if navigation_path else None,
+                state.point_navigation_target,
+            )
             if display:
-                new_key = (static_ts, display.robot_x, display.robot_y, display.robot_heading, trail_len)
+                new_key = (
+                    static_revision,
+                    display.robot_x,
+                    display.robot_y,
+                    display.robot_heading,
+                    trail_len,
+                    navigation_key,
+                )
             else:
-                new_key = (static_ts,)
+                new_key = (static_revision, navigation_key)
 
-        now = time.monotonic()
-        since_render = now - self._last_render_time if self._last_render_time else 999
+            # MapData is mutable. Copy the collections the renderer reads so
+            # this queued request remains tied to the same map revision even
+            # if the client receives a newer map before the executor runs.
+            request = _RenderRequest(
+                display=_snapshot_display(display),
+                cache_key=new_key,
+                static_map=replace(
+                    static_map,
+                    rooms=list(static_map.rooms),
+                    obstacles=list(static_map.obstacles),
+                ),
+                trail=tuple(self._trail),
+                navigation_path=tuple(state.point_navigation_path),
+                navigation_target=state.point_navigation_target,
+            )
 
         if new_key == self._cache_key and self._cached_image:
             self.async_write_ha_state()
             return
 
-        if self._cached_image and since_render < _MIN_RENDER_INTERVAL:
-            self.async_write_ha_state()
+        self._queue_render(request)
+
+    def _queue_render(self, request: _RenderRequest) -> None:
+        """Start one renderer or replace its pending work with the newest map."""
+        if self._render_task is not None and not self._render_task.done():
+            self._pending_render = request
             return
+        self._render_task = self.hass.async_create_task(self._async_render(request))
 
-        self.hass.async_create_task(self._async_render(display, new_key))
+    async def _async_render(self, request: _RenderRequest) -> None:
+        """Render serialized, coalesced map snapshots in an executor thread."""
+        try:
+            async with self._render_lock:
+                while True:
+                    # Honor the render rate even when the newest request came
+                    # in during the previous render. A later broadcast replaces
+                    # ``_pending_render`` while this worker is asleep.
+                    if self._cached_image and self._last_render_time:
+                        remaining = _MIN_RENDER_INTERVAL - (
+                            time.monotonic() - self._last_render_time
+                        )
+                        if remaining > 0:
+                            await asyncio.sleep(remaining)
+                            if self._pending_render is not None:
+                                request = self._pending_render
+                                self._pending_render = None
 
-    async def _async_render(self, display, new_key) -> None:
-        """Render the map image in an executor thread."""
+                    await self._async_render_request(request)
+                    if self._pending_render is None:
+                        break
+                    request = self._pending_render
+                    self._pending_render = None
+        finally:
+            self._render_task = None
+
+    async def _async_render_request(self, request: _RenderRequest) -> None:
+        """Render one immutable request and publish only its matching metadata."""
+        display = request.display
         if _DEBUG_VIEW and display:
-            trail = list(self._trail)
-            dock = self._dock_pos
-            viewport = None
-            if self._vp_initialized:
-                viewport = (
-                    self._vp_min_x, self._vp_min_y,
-                    self._vp_max_x, self._vp_max_y,
-                )
             try:
                 png_bytes = await self.hass.async_add_executor_job(
                     _render_debug_view,
                     display.robot_x,
                     display.robot_y,
                     display.robot_heading,
-                    trail,
-                    dock,
-                    viewport,
+                    list(request.trail),
+                    request.debug_dock,
+                    request.debug_viewport,
                 )
                 if png_bytes:
                     self._cached_image = png_bytes
-                    self._cache_key = new_key
+                    self._cached_navigation_revision = None
+                    self._cached_map_width = None
+                    self._cached_map_height = None
+                    self._cached_navigation_image_width = None
+                    self._cached_navigation_image_height = None
+                    self._cached_room_markers = ()
+                    self._cached_room_markers_revision = None
+                    self._cache_key = request.cache_key
                     self._last_render_time = time.monotonic()
                     self._render_count += 1
             except Exception:
@@ -241,17 +418,21 @@ class NarwalMapCamera(NarwalEntity, Camera):
             return
 
         # --- Normal map render path (with cached base + overlay) ---
-        state = self.coordinator.client.state
-        static_map = state.map_data
+        static_map = request.static_map
         if not static_map:
             self.async_write_ha_state()
             return
+        rendered_navigation_revision = static_map.navigation_revision()
 
         from .narwal_client.map_renderer import render_base_map, render_overlay
 
-        # Rebuild base map only when static map data changes
-        static_ts = static_map.created_at or 0
-        if self._base_map_image is None or static_ts != self._base_map_ts:
+        # Rebuild the base for the same revision used to authorize navigation.
+        # Map edits can change edit_version while generation_time is unchanged.
+        static_revision = _static_map_cache_key(static_map)
+        if (
+            self._base_map_image is None
+            or static_revision != self._base_map_revision
+        ):
             room_names: dict[int, str] | None = None
             if static_map.rooms:
                 room_names = {
@@ -271,20 +452,46 @@ class NarwalMapCamera(NarwalEntity, Camera):
             )
             if base_img:
                 self._base_map_image = base_img
-                self._base_map_ts = static_ts
-                _LOGGER.info("Base map rendered (ts=%d, %dx%d)", static_ts, static_map.width, static_map.height)
+                self._base_map_revision = static_revision
+                _LOGGER.info(
+                    "Base map rendered (revision=%s, %dx%d)",
+                    str(static_revision)[:12],
+                    static_map.width,
+                    static_map.height,
+                )
             else:
                 self.async_write_ha_state()
                 return
+        # Keep a request-local reference. It is intentionally not read from
+        # ``self`` again after an executor await, so base and overlays cannot
+        # become cross-revision even if a later request is waiting.
+        base_map_image = self._base_map_image
+
+        # Derive marker positions from the same immutable raw map snapshot as
+        # the image.  This stays outside the event loop because it decodes the
+        # compressed grid again, and is cached across robot-overlay updates.
+        if self._cached_room_markers_revision == static_revision:
+            room_markers = self._cached_room_markers
+        else:
+            markers = await self.hass.async_add_executor_job(
+                static_map.room_markers
+            )
+            room_markers = tuple(markers) if isinstance(markers, list) else ()
 
         # Compute robot grid position
         robot_x = None
         robot_y = None
         robot_heading = None
         if display:
-            grid_pos = display.to_grid_coords(
-                static_map.resolution, static_map.origin_x, static_map.origin_y,
-            )
+            grid_pos = None
+            if (
+                static_map.resolution > 0
+                and not (display.robot_x == 0.0 and display.robot_y == 0.0)
+            ):
+                grid_pos = (
+                    display.robot_x - static_map.origin_x,
+                    display.robot_y - static_map.origin_y,
+                )
             if grid_pos is not None:
                 robot_x, robot_y = grid_pos
                 robot_heading = display.robot_heading
@@ -326,22 +533,49 @@ class NarwalMapCamera(NarwalEntity, Camera):
                     except Exception:
                         _LOGGER.debug("POSITION DIAG failed", exc_info=True)
 
-        trail = list(self._trail) if self._trail else None
+        trail = list(request.trail) if request.trail else None
+        navigation_path: list[tuple[float, float]] = []
+        for world_x, world_y in request.navigation_path:
+            grid_point = static_map.world_to_grid(world_x, world_y)
+            if grid_point is not None:
+                navigation_path.append(grid_point)
+        navigation_target = None
+        if request.navigation_target is not None:
+            navigation_target = static_map.world_to_grid(
+                *request.navigation_target
+            )
 
         try:
             png_bytes = await self.hass.async_add_executor_job(
                 render_overlay,
-                self._base_map_image,
+                base_map_image,
                 static_map.height,
                 robot_x,
                 robot_y,
                 robot_heading,
                 trail,
+                navigation_path or None,
+                navigation_target,
             )
 
             if png_bytes:
                 self._cached_image = png_bytes
-                self._cache_key = new_key
+                self._cached_navigation_revision = rendered_navigation_revision
+                self._cached_map_width = static_map.width
+                self._cached_map_height = static_map.height
+                image_width = getattr(base_map_image, "width", None)
+                image_height = getattr(base_map_image, "height", None)
+                self._cached_navigation_image_width = (
+                    image_width if isinstance(image_width, int) and image_width > 0 else None
+                )
+                self._cached_navigation_image_height = (
+                    image_height
+                    if isinstance(image_height, int) and image_height > 0
+                    else None
+                )
+                self._cached_room_markers = room_markers
+                self._cached_room_markers_revision = static_revision
+                self._cache_key = request.cache_key
                 self._last_render_time = time.monotonic()
                 self._render_count += 1
 

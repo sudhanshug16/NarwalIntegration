@@ -30,13 +30,15 @@ Thumbs.db
 .coverage
 htmlcov/
 .mypy_cache/
+.narwal-lab/
 
 # Environment
 .env
 .env.local
 
 # --- Reverse engineering artifacts (kept locally, not in repo) ---
-tools/
+tools/*
+!tools/narwal_ws_lab.py
 captures/
 proto/
 apk/
